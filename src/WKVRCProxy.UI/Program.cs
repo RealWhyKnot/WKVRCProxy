@@ -150,8 +150,10 @@ class Program
                 case "EXIT": _window?.Close(); break;
                 case "GET_CONFIG": _window?.SendWebMessage(JsonSerializer.Serialize(new { type = "CONFIG", data = _settings?.Config })); break;
                 case "OPEN_BROWSER":
-                    string url = root.GetProperty("url").GetString() ?? "";
-                    if (!string.IsNullOrEmpty(url)) Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+                    if (root.TryGetProperty("data", out var browserData)) {
+                        string url = browserData.GetProperty("url").GetString() ?? "";
+                        if (!string.IsNullOrEmpty(url)) Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+                    }
                     break;
                 case "SYNC_LOGS":
                     foreach (var entry in Logger.GetHistory())
