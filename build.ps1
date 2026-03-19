@@ -1,0 +1,121 @@
+$ErrorActionPreference = "Stop"
+
+$BuildDir = Join-Path $PSScriptRoot "dist"
+$VendorDir = Join-Path $PSScriptRoot "vendor"
+$VersionFile = Join-Path $VendorDir "versions.json"
+$LocalVersionState = Join-Path $VendorDir "local_build_state.json"
+
+if (Test-Path $BuildDir) { 
+    Write-Host "Cleaning dist folder..." -ForegroundColor Cyan
+    
+    # Terminate running instances to release file locks
+    Get-Process "WKVRCProxy" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process "redirector" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 1
+
+    try {
+        Remove-Item -Path $BuildDir -Recurse -Force -ErrorAction Stop
+    } catch {
+        Write-Host "Warning: Failed to fully clean dist folder. Some files may be in use." -ForegroundColor Yellow
+    }
+}
+New-Item -ItemType Directory $BuildDir -Force | Out-Null
+if (!(Test-Path $VendorDir)) { New-Item -ItemType Directory $VendorDir }
+
+# --- Dependency Tracking ---
+$Versions = @{ "ytdlp" = ""; "deno" = "" }
+if (Test-Path $VersionFile) {
+    $Versions = Get-Content $VersionFile | ConvertFrom-Json
+}
+
+Write-Host "--- Checking Dependencies ---" -ForegroundColor Cyan
+
+# 1. Fetch Latest yt-dlp
+$YtDlpRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+$LatestYtDlpVersion = $YtDlpRelease.tag_name
+
+if ($Versions.ytdlp -ne $LatestYtDlpVersion) {
+    Write-Host "Updating yt-dlp to $LatestYtDlpVersion..." -ForegroundColor Yellow
+    $DownloadUrl = ($YtDlpRelease.assets | Where-Object { $_.name -eq "yt-dlp.exe" }).browser_download_url
+    Invoke-WebRequest -Uri $DownloadUrl -OutFile (Join-Path $VendorDir "yt-dlp.exe")
+    $Versions.ytdlp = $LatestYtDlpVersion
+}
+
+# 2. Fetch Latest Deno
+$DenoRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/denoland/deno/releases/latest"
+$LatestDenoVersion = $DenoRelease.tag_name
+
+if ($Versions.deno -ne $LatestDenoVersion) {
+    Write-Host "Updating Deno to $LatestDenoVersion..." -ForegroundColor Yellow
+    $DownloadUrl = ($DenoRelease.assets | Where-Object { $_.name -eq "deno-x86_64-pc-windows-msvc.zip" }).browser_download_url
+    if (!$DownloadUrl) {
+        $DownloadUrl = ($DenoRelease.assets | Where-Object { $_.name -match "x86_64-pc-windows-msvc\.zip" } | Select-Object -First 1).browser_download_url
+    }
+    $ZipPath = Join-Path $VendorDir "deno.zip"
+    Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath
+    Expand-Archive -Path $ZipPath -DestinationPath $VendorDir -Force
+    Remove-Item $ZipPath
+    $Versions.deno = $LatestDenoVersion
+}
+
+$Versions | ConvertTo-Json | Out-File $VersionFile
+
+# --- Daily Versioning Logic ---
+$Today = Get-Date -Format "yyyy.M.d"
+$BuildCount = 0
+$UID = [Guid]::NewGuid().ToString().Substring(0, 4).ToUpper()
+
+if (Test-Path $LocalVersionState) {
+    $State = Get-Content $LocalVersionState | ConvertFrom-Json
+    if ($State.Date -eq $Today) {
+        $BuildCount = $State.Count + 1
+    }
+}
+
+$FullVersion = "$Today.$BuildCount-$UID"
+@{ "Date" = $Today; "Count" = $BuildCount } | ConvertTo-Json | Out-File $LocalVersionState
+
+Write-Host "Building Version: $FullVersion" -ForegroundColor Magenta
+
+# --- Inject Version into Store ---
+$AppStorePath = "src/WKVRCProxy.UI/ui/src/stores/appStore.ts"
+$StoreContent = Get-Content $AppStorePath -Raw
+$NewStoreContent = $StoreContent -replace "version = ref\('(.+?)'\)", "version = ref('$FullVersion')"
+Set-Content $AppStorePath $NewStoreContent
+
+# --- Build Frontend ---
+Write-Host "`n--- Building Frontend ---" -ForegroundColor Cyan
+Push-Location "src/WKVRCProxy.UI/ui"
+npm run build
+Pop-Location
+
+# --- Build .NET Projects ---
+Write-Host "`n--- Building .NET Projects ---" -ForegroundColor Cyan
+# Production build: Release mode
+dotnet publish src/WKVRCProxy.UI/WKVRCProxy.UI.csproj -c Release -o $BuildDir --self-contained true -r win-x64 /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -warnaserror
+dotnet publish src/WKVRCProxy.Redirector/WKVRCProxy.Redirector.csproj -c Release -o $BuildDir --self-contained true -r win-x64 /p:PublishSingleFile=true -warnaserror
+
+# --- Final Packaging ---
+Write-Host "`n--- Packaging Assets ---" -ForegroundColor Cyan
+$ToolsDir = Join-Path $BuildDir "tools"
+if (!(Test-Path $ToolsDir)) { New-Item -ItemType Directory $ToolsDir }
+
+# Renaming logic needs to account for the -windows TFM
+$UiExeName = "WKVRCProxy.UI.exe"
+$UiBuildPath = Join-Path $BuildDir $UiExeName
+
+Move-Item $UiBuildPath (Join-Path $BuildDir "WKVRCProxy.exe") -Force
+Move-Item (Join-Path $BuildDir "WKVRCProxy.Redirector.exe") (Join-Path $ToolsDir "redirector.exe") -Force
+
+Copy-Item -Path "src/WKVRCProxy.UI/wwwroot" -Destination $BuildDir -Recurse -Force
+Copy-Item (Join-Path $VendorDir "yt-dlp.exe") (Join-Path $ToolsDir "yt-dlp.exe")
+Copy-Item (Join-Path $VendorDir "deno.exe") (Join-Path $ToolsDir "deno.exe")
+
+# Cleanup
+Get-ChildItem -Path $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force
+Get-ChildItem -Path $BuildDir -Filter "*.log" | Remove-Item -Force
+
+$FullVersion | Set-Content -Path (Join-Path $BuildDir "version.txt") -Encoding UTF8
+$FullVersion | Set-Content -Path (Join-Path $PSScriptRoot "version.txt") -Encoding UTF8
+
+Write-Host "`nBuild $FullVersion Complete! Output in: $BuildDir" -ForegroundColor Green

@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WKVRCProxy.Core/WKVRCProxy.Core.csproj" />
+    <Project Path="src/WKVRCProxy.Redirector/WKVRCProxy.Redirector.csproj" />
+    <Project Path="src/WKVRCProxy.UI/WKVRCProxy.UI.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,40 @@
+# Core Ignored Folders
+.old/
+todo/
+vendor/
+dist/
+logs/
+build/
+node_modules/
+.context/
+.docs/
+GEMINI.md
+
+# .NET
+[Bb]in/
+[Oo]bj/
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio
+.vs/
+.vscode/
+
+# Web UI
+dist-ssr/
+wwwroot/
+*.local
+
+# Project Specific
+build_test/
+_ytdlp_build/
+test_extract*/
+VRCYTProxy*.zip
+_tmp*/
+*.log
+build_log.ps1.txt
+wrapper_state.json
+version.txt
+system.db
+system.db-journal
