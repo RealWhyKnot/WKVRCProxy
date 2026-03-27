@@ -39,20 +39,50 @@ public class RelayServer : IProxyModule, IDisposable
             _ruleManager = context.GetModule<ProxyRuleManager>();
             _curlClient = context.GetModule<CurlImpersonateClient>();
             _potProvider = context.GetModule<PotProviderService>();
-            int port = _portManager.CurrentPort;
-
-            if (port == 0)
+            
+            int attempts = 0;
+            bool success = false;
+            
+            while (attempts < 5 && !success)
             {
-                _logger.Error("RelayServer failed: Port is 0. Is RelayPortManager registered?");
+                int port = _portManager.CurrentPort;
+
+                if (port == 0)
+                {
+                    _logger.Error("RelayServer failed: Port is 0. Is RelayPortManager registered?");
+                    return Task.CompletedTask;
+                }
+
+                _listener = new HttpListener();
+                string prefix = "http://127.0.0.1:" + port + "/";
+                _listener.Prefixes.Add(prefix);
+                
+                try 
+                {
+                    _listener.Start();
+                    success = true;
+                    _logger.Success("Relay listening on port " + port);
+                }
+                catch (HttpListenerException)
+                {
+                    attempts++;
+                    _logger.Warning($"Port {port} conflict detected. Retrying... ({attempts}/5)");
+                    _listener.Close();
+                    
+                    if (attempts < 5)
+                    {
+                        // Get a new port via RelayPortManager
+                        _portManager.RefreshPort();
+                    }
+                }
+            }
+            
+            if (!success)
+            {
+                _logger.Error("FATAL: Unable to bind to any local port after 5 attempts. Please check your firewall or restart your PC.");
+                // We should also notify the UI if possible via IPC, but logging FATAL does that in the new system.
                 return Task.CompletedTask;
             }
-
-            _listener = new HttpListener();
-            string prefix = "http://127.0.0.1:" + port + "/";
-            _listener.Prefixes.Add(prefix);
-            _listener.Start();
-
-            _logger.Success("Relay listening on port " + port);
 
             _ = Task.Run(ListenLoop);
         }

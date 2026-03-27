@@ -70,6 +70,7 @@ class Program
         var relayPortManager = new RelayPortManager();
         var proxyRuleManager = new ProxyRuleManager();
         var relayServer = new RelayServer();
+        var integrityManager = new RelayIntegrityManager();
 
         _coordinator.Register(logMonitor);
         _coordinator.Register(codecInstaller);
@@ -80,6 +81,7 @@ class Program
         _coordinator.Register(relayPortManager);
         _coordinator.Register(proxyRuleManager);
         _coordinator.Register(relayServer);
+        _coordinator.Register(integrityManager);
 
         hostsManager.OnIpcRequest += (type, data) => {
             if (_isWindowReady) {
@@ -254,6 +256,26 @@ class Program
                 case "REQUEST_HOSTS_SETUP":
                     Task.Run(() => {
                         _coordinator?.GetModule<HostsManager>().RequestBypassAsync();
+                    });
+                    break;
+                case "ADD_FIREWALL_RULE":
+                    Task.Run(() => {
+                        try
+                        {
+                            var psi = new ProcessStartInfo {
+                                FileName = "netsh",
+                                Arguments = $"advfirewall firewall add rule name=\"WKVRCProxy Relay\" dir=in action=allow program=\"{Process.GetCurrentProcess().MainModule?.FileName}\" enable=yes",
+                                Verb = "runas",
+                                UseShellExecute = true,
+                                WindowStyle = ProcessWindowStyle.Hidden
+                            };
+                            Process.Start(psi)?.WaitForExit();
+                            _logger?.Success("Firewall exclusion rule added successfully.");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger?.Error("Failed to add firewall rule: " + ex.Message);
+                        }
                     });
                     break;
             }

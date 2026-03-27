@@ -95,10 +95,10 @@ public class HostsManager : IProxyModule
         {
             using var fileStream = new FileStream(hostsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = new StreamReader(fileStream);
-            string? line;
-            while ((line = reader.ReadLine()) != null)
+            string? originalLine;
+            while ((originalLine = reader.ReadLine()) != null)
             {
-                line = line.Trim();
+                string line = originalLine.Trim();
                 if (line.StartsWith("#")) continue;
                 if (line.Contains("127.0.0.1") && line.Contains("localhost.youtube.com"))
                 {

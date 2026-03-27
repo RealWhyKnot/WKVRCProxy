@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
@@ -112,6 +113,8 @@ public class PatcherService : IProxyModule, IDisposable
             {
                 string name = Path.GetFileName(f);
                 if (name.Equals("yt-dlp.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.Equals("yt-dlp-og.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.Equals("relay_port.dat", StringComparison.OrdinalIgnoreCase)) continue;
                 junk.Add(f);
             }
             foreach (var d in Directory.GetDirectories(_vrcToolsDir))
@@ -223,6 +226,24 @@ public class PatcherService : IProxyModule, IDisposable
                 File.Move(backupPath, targetPath);
                 _logger?.Success("Original state restored.");
             }
+            
+            // Step 11: Deep Process Cleanup
+            _logger?.Trace("Performing deep process cleanup...");
+            foreach (var proc in Process.GetProcessesByName("curl-impersonate-win"))
+            {
+                try { proc.Kill(); } catch { }
+            }
+            foreach (var proc in Process.GetProcessesByName("bgutil-ytdlp-pot-provider"))
+            {
+                try { proc.Kill(); } catch { }
+            }
+            
+            string relayPortFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "relay_port.dat");
+            if (File.Exists(relayPortFile))
+            {
+                try { File.Delete(relayPortFile); } catch { }
+            }
+            
         }
         catch (Exception ex)
         {

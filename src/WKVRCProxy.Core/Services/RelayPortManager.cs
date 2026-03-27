@@ -20,6 +20,13 @@ public class RelayPortManager : IProxyModule
         _logger = context.Logger;
         _logger.Trace("Initializing RelayPortManager...");
 
+        RefreshPort();
+
+        return Task.CompletedTask;
+    }
+
+    public void RefreshPort()
+    {
         try
         {
             using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -27,29 +34,26 @@ public class RelayPortManager : IProxyModule
             CurrentPort = ((IPEndPoint)listener.LocalEndpoint).Port;
             listener.Stop();
             
-            _logger.Debug($"Assigned ephemeral relay port: {CurrentPort}");
+            _logger?.Debug($"Assigned ephemeral relay port: {CurrentPort}");
             
             string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy");
             if (!Directory.Exists(appData)) Directory.CreateDirectory(appData);
             
             _portFile = Path.Combine(appData, "relay_port.dat");
             
-            // Note: We use FileShare.Read to ensure other processes can read it concurrently
             using (var fs = new FileStream(_portFile, FileMode.Create, FileAccess.Write, FileShare.Read))
             using (var writer = new StreamWriter(fs))
             {
                 writer.Write(CurrentPort.ToString());
             }
 
-            _logger.Success($"Relay port exported: {CurrentPort}");
+            _logger?.Success($"Relay port exported: {CurrentPort}");
         }
         catch (Exception ex)
         {
             _logger?.Error("Failed to initialize or export relay port: " + ex.Message);
             CurrentPort = 0;
         }
-
-        return Task.CompletedTask;
     }
 
     public void Shutdown()

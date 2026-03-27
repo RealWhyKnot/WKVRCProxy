@@ -122,6 +122,16 @@ function clearCustomPath() {
         </button>
       </div>
 
+      <div class="pt-4 border-t border-white/5 flex items-center justify-between group">
+        <div>
+          <h4 class="text-[10px] font-black uppercase tracking-[0.3em] text-white/40 mb-1 italic group-hover:text-yellow-400 transition-colors">Troubleshooting</h4>
+          <p class="text-[8px] text-white/20 font-bold uppercase tracking-widest">If videos error immediately in public instances</p>
+        </div>
+        <button @click="appStore.sendMessage('ADD_FIREWALL_RULE')" class="px-8 py-4 rounded-2xl bg-white/5 border border-white/5 text-white/40 hover:bg-yellow-500/10 hover:text-yellow-400 hover:border-yellow-500/20 transition-all text-[9px] font-black uppercase tracking-[0.2em] italic active:scale-95 shadow-xl shadow-transparent hover:shadow-yellow-500/10">
+          Add Firewall Exclusion
+        </button>
+      </div>
+
       <div class="pt-4 border-t border-white/5 flex items-center justify-between">
         <div>
           <h4 class="text-[10px] font-black uppercase tracking-[0.3em] text-white/10 mb-1 italic">Maintenance</h4>
