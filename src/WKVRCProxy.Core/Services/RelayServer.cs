@@ -132,6 +132,8 @@ public class RelayServer : IProxyModule, IDisposable
                 return;
             }
 
+            // Normalization: Re-replace spaces back with pluses for base64 safety
+            targetBase64 = targetBase64.Replace(" ", "+");
             string targetUrl = Encoding.UTF8.GetString(Convert.FromBase64String(targetBase64));
 
             _logger?.Trace("Relaying request: " + context.Request.HttpMethod + " -> " + targetUrl);

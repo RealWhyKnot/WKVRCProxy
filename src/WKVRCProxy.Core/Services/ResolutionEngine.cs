@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -125,7 +126,7 @@ public class ResolutionEngine
                 int port = _relayPortManager.CurrentPort;
                 if (port > 0)
                 {
-                    string relayUrl = $"http://localhost.youtube.com:{port}/play?target={encodedUrl}";
+                    string relayUrl = "http://localhost.youtube.com:" + port + "/play?target=" + WebUtility.UrlEncode(encodedUrl);
                     result = relayUrl;
                     _logger.Info("URL wrapped for localhost relay proxy bypass.");
                 }
