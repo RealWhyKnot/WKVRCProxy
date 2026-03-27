@@ -27,6 +27,7 @@ export interface AppConfig {
   userAgent: string;
   customVrcPath?: string;
   bypassHostsSetupDeclined?: boolean;
+  enableRelayBypass: boolean;
 }
 
 export interface AppStatus {
@@ -61,13 +62,14 @@ export const useAppStore = defineStore('app', () => {
     preferredTier: 'tier1',
     history: [],
     userAgent: '',
-    bypassHostsSetupDeclined: false
+    bypassHostsSetupDeclined: false,
+    enableRelayBypass: true
   })
   
   const showHostsPrompt = ref(false)
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.3.26.0-57E8')
+  const version = ref('2026.3.26.1-92BC')
 
   function handleMessage(message: string) {
     try {
@@ -141,6 +143,7 @@ export const useAppStore = defineStore('app', () => {
     terminate
   }
 })
+
 
 
 

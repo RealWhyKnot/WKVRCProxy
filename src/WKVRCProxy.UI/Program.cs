@@ -68,6 +68,7 @@ class Program
         var tier2Client = new Tier2WebSocketClient(_logger);
         var hostsManager = new HostsManager();
         var relayPortManager = new RelayPortManager();
+        var relayServer = new RelayServer();
 
         _coordinator.Register(logMonitor);
         _coordinator.Register(codecInstaller);
@@ -76,6 +77,7 @@ class Program
         _coordinator.Register(tier2Client);
         _coordinator.Register(hostsManager);
         _coordinator.Register(relayPortManager);
+        _coordinator.Register(relayServer);
 
         hostsManager.OnIpcRequest += (type, data) => {
             if (_isWindowReady) {
@@ -96,7 +98,7 @@ class Program
             }
         };
 
-        var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client);
+        var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager);
         ipcServer.OnResolveRequested += async (payload) => await resEngine.ResolveAsync(payload);
         logMonitor.OnVrcPathDetected += (path) => patcherService.UpdateToolsDir(path);
         
@@ -215,6 +217,7 @@ class Program
                             _settings.Config.AutoPatchOnStart = newConfig.AutoPatchOnStart;
                             _settings.Config.CustomVrcPath = newConfig.CustomVrcPath;
                             _settings.Config.BypassHostsSetupDeclined = newConfig.BypassHostsSetupDeclined;
+                            _settings.Config.EnableRelayBypass = newConfig.EnableRelayBypass;
                             _settings.Save();
                         }
                     }

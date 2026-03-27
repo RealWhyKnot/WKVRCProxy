@@ -86,6 +86,16 @@ function clearCustomPath() {
           </div>
           <p class="text-[8px] text-white/20 font-black uppercase tracking-widest leading-relaxed">Only use IPv4 for video resolution.</p>
         </div>
+
+        <div @click="appStore.config.enableRelayBypass = !appStore.config.enableRelayBypass; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl md:col-span-2">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Enable Relay Bypass</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableRelayBypass ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/5 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700 cubic-bezier(0.2, 0.8, 0.2, 1)', appStore.config.enableRelayBypass ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[8px] text-white/20 font-black uppercase tracking-widest leading-relaxed">Wrap URLs through the local middleman server to bypass domain blocking in public worlds.</p>
+        </div>
       </div>
 
       <div class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] flex items-center justify-between group hover:border-blue-500/20 transition-all duration-500 backdrop-blur-3xl">

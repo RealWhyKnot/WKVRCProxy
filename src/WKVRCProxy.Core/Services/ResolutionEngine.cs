@@ -19,6 +19,8 @@ public class ResolutionEngine
     private readonly VrcLogMonitor _monitor;
     private readonly HttpClient _httpClient;
     private readonly Tier2WebSocketClient _tier2Client;
+    private readonly HostsManager _hostsManager;
+    private readonly RelayPortManager _relayPortManager;
 
     public event Action<string, object>? OnStatusUpdate;
     private int _activeResolutions = 0;
@@ -26,12 +28,14 @@ public class ResolutionEngine
         { "tier1", 0 }, { "tier2", 0 }, { "tier3", 0 }, { "tier4", 0 }
     };
 
-    public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client)
+    public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager)
     {
         _logger = logger;
         _settings = settings;
         _monitor = monitor;
         _tier2Client = tier2Client;
+        _hostsManager = hostsManager;
+        _relayPortManager = relayPortManager;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(_settings.Config.UserAgent);
         
@@ -111,6 +115,25 @@ public class ResolutionEngine
             _logger.Error("Resolution loop fatal error: " + ex.Message);
             result = targetUrl;
             activeTier = "tier4-error";
+        }
+
+        if (_settings.Config.EnableRelayBypass && _hostsManager.IsBypassActive() && !string.IsNullOrEmpty(result) && result != "FAILED")
+        {
+            try
+            {
+                string encodedUrl = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(result));
+                int port = _relayPortManager.CurrentPort;
+                if (port > 0)
+                {
+                    string relayUrl = $"http://localhost.youtube.com:{port}/play?target={encodedUrl}";
+                    result = relayUrl;
+                    _logger.Info("URL wrapped for localhost relay proxy bypass.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning("Failed to wrap URL for relay: " + ex.Message);
+            }
         }
 
         var tierKey = activeTier.Split('-')[0];

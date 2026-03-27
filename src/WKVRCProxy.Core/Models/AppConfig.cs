@@ -42,4 +42,7 @@ public class AppConfig
 
     [JsonPropertyName("bypassHostsSetupDeclined")]
     public bool BypassHostsSetupDeclined { get; set; } = false;
+
+    [JsonPropertyName("enableRelayBypass")]
+    public bool EnableRelayBypass { get; set; } = true;
 }
