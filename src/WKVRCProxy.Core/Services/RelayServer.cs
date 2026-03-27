@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,6 +20,10 @@ public class RelayServer : IProxyModule, IDisposable
     private HttpListener? _listener;
     private CancellationTokenSource _cts = new();
     private RelayPortManager? _portManager;
+    private readonly HttpClient _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+    private static readonly HashSet<string> SafeHeaders = new(StringComparer.OrdinalIgnoreCase) {
+        "Range", "Accept", "Accept-Language", "Accept-Encoding", "Referer", "Connection", "Keep-Alive"
+    };
 
     public Task InitializeAsync(IModuleContext context)
     {
@@ -91,18 +99,53 @@ public class RelayServer : IProxyModule, IDisposable
 
             string targetUrl = Encoding.UTF8.GetString(Convert.FromBase64String(targetBase64));
 
-            _logger?.Trace("Relaying request for: " + targetUrl);
+            _logger?.Trace("Relaying request: " + context.Request.HttpMethod + " -> " + targetUrl);
 
-            // Dummy response for Phase 2 verification
-            byte[] responseBytes = Encoding.UTF8.GetBytes("Relay Active. Target was: " + targetUrl);
-            context.Response.StatusCode = 200;
-            context.Response.ContentLength64 = responseBytes.Length;
-            await context.Response.OutputStream.WriteAsync(responseBytes, 0, responseBytes.Length);
+            using var outboundRequest = new HttpRequestMessage(new HttpMethod(context.Request.HttpMethod), targetUrl);
+            
+            foreach (string key in context.Request.Headers.AllKeys)
+            {
+                if (key != null && SafeHeaders.Contains(key))
+                {
+                    outboundRequest.Headers.TryAddWithoutValidation(key, context.Request.Headers[key]);
+                }
+            }
+            
+            outboundRequest.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+
+            using var response = await _httpClient.SendAsync(outboundRequest, HttpCompletionOption.ResponseHeadersRead, _cts.Token);
+            
+            context.Response.StatusCode = (int)response.StatusCode;
+            
+            foreach (var header in response.Headers.Concat(response.Content.Headers))
+            {
+                string key = header.Key;
+                string value = string.Join(", ", header.Value);
+                
+                if (key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+                
+                if (key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (long.TryParse(value, out long len)) context.Response.ContentLength64 = len;
+                    continue;
+                }
+
+                try { context.Response.Headers.Add(key, value); } catch { }
+            }
+
+            using var sourceStream = await response.Content.ReadAsStreamAsync();
+            try
+            {
+                await sourceStream.CopyToAsync(context.Response.OutputStream, 81920, _cts.Token);
+            }
+            catch (HttpListenerException) { /* Player closed connection to seek */ }
+            catch (IOException) { /* Socket closed abruptly */ }
+            catch (TaskCanceledException) { /* System shutting down */ }
         }
         catch (Exception ex)
         {
             _logger?.Error("Relay Request Handling Error: " + ex.Message);
-            context.Response.StatusCode = 500;
+            try { context.Response.StatusCode = 500; } catch { }
         }
         finally
         {

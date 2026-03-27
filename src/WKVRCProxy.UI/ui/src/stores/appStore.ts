@@ -69,7 +69,7 @@ export const useAppStore = defineStore('app', () => {
   const showHostsPrompt = ref(false)
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.3.26.1-92BC')
+  const version = ref('2026.3.26.2-4C43')
 
   function handleMessage(message: string) {
     try {
@@ -143,6 +143,7 @@ export const useAppStore = defineStore('app', () => {
     terminate
   }
 })
+
 
 
 
