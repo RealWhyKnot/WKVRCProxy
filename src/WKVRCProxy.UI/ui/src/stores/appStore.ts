@@ -26,6 +26,7 @@ export interface AppConfig {
   history: HistoryEntry[];
   userAgent: string;
   customVrcPath?: string;
+  bypassHostsSetupDeclined?: boolean;
 }
 
 export interface AppStatus {
@@ -59,11 +60,14 @@ export const useAppStore = defineStore('app', () => {
     autoPatchOnStart: true,
     preferredTier: 'tier1',
     history: [],
-    userAgent: ''
+    userAgent: '',
+    bypassHostsSetupDeclined: false
   })
   
+  const showHostsPrompt = ref(false)
+  
   const isBridgeReady = ref(false)
-  const version = ref('2026.3.19.27-C5D2')
+  const version = ref('2026.3.26.0-57E8')
 
   function handleMessage(message: string) {
     try {
@@ -78,6 +82,8 @@ export const useAppStore = defineStore('app', () => {
         config.value = parsed.data
       } else if (parsed.type === 'STATUS') {
         status.value = parsed.data
+      } else if (parsed.type === 'PROMPT_HOSTS_SETUP') {
+        showHostsPrompt.value = true
       }
     } catch (e) { }
   }
@@ -126,6 +132,7 @@ export const useAppStore = defineStore('app', () => {
     status,
     isBridgeReady,
     version,
+    showHostsPrompt,
     initBridge,
     sendMessage,
     saveConfig,
@@ -134,6 +141,7 @@ export const useAppStore = defineStore('app', () => {
     terminate
   }
 })
+
 
 
 

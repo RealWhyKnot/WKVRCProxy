@@ -102,7 +102,17 @@ function clearCustomPath() {
         </div>
       </div>
 
-      <div class="pt-8 border-t border-white/5 flex items-center justify-between">
+      <div class="pt-8 border-t border-white/5 flex items-center justify-between group">
+        <div>
+          <h4 class="text-[10px] font-black uppercase tracking-[0.3em] text-white/40 mb-1 italic group-hover:text-blue-400 transition-colors">Network Authorization</h4>
+          <p class="text-[8px] text-white/20 font-bold uppercase tracking-widest">Re-prompt for hosts file bypass</p>
+        </div>
+        <button @click="appStore.sendMessage('REQUEST_HOSTS_SETUP')" class="px-8 py-4 rounded-2xl bg-white/5 border border-white/5 text-white/40 hover:bg-blue-500/10 hover:text-blue-400 hover:border-blue-500/20 transition-all text-[9px] font-black uppercase tracking-[0.2em] italic active:scale-95 shadow-xl shadow-transparent hover:shadow-blue-500/10">
+          Request Prompt
+        </button>
+      </div>
+
+      <div class="pt-4 border-t border-white/5 flex items-center justify-between">
         <div>
           <h4 class="text-[10px] font-black uppercase tracking-[0.3em] text-white/10 mb-1 italic">Maintenance</h4>
           <p class="text-[8px] text-white/5 font-bold uppercase tracking-widest">Reinstall local tools</p>

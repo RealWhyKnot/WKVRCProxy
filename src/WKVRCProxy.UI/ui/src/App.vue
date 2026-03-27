@@ -11,6 +11,20 @@ import SettingsView from './views/SettingsView.vue'
 
 const appStore = useAppStore()
 
+const acceptHostsPrompt = () => {
+  appStore.sendMessage('HOSTS_SETUP_ACCEPTED')
+  appStore.showHostsPrompt = false
+}
+
+const declineHostsPrompt = (neverAskAgain: boolean) => {
+  if (neverAskAgain) {
+    appStore.config.bypassHostsSetupDeclined = true
+    appStore.saveConfig()
+  }
+  appStore.sendMessage('HOSTS_SETUP_DECLINED')
+  appStore.showHostsPrompt = false
+}
+
 onMounted(() => {
   if (!appStore.initBridge()) {
     window.addEventListener('photino-ready', () => {
@@ -34,6 +48,40 @@ onMounted(() => {
           <div class="w-1 h-1 bg-red-500 rounded-full animate-bounce"></div>
           <div class="w-1 h-1 bg-red-500 rounded-full animate-bounce [animation-delay:0.2s]"></div>
           <div class="w-1 h-1 bg-red-500 rounded-full animate-bounce [animation-delay:0.4s]"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hosts Setup Prompt Overlay -->
+    <div v-if="appStore.showHostsPrompt" class="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center backdrop-blur-xl animate-in fade-in duration-300">
+      <div class="bg-[#0a0a0c] border border-white/10 rounded-3xl p-8 max-w-lg shadow-2xl relative overflow-hidden mx-4">
+        <div class="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent pointer-events-none"></div>
+        <div class="relative z-10 space-y-6">
+          <div class="w-12 h-12 bg-blue-500/20 rounded-2xl flex items-center justify-center border border-blue-500/30">
+            <i class="bi bi-shield-lock-fill text-blue-400 text-xl"></i>
+          </div>
+          <div>
+            <h2 class="text-xl font-bold mb-2">Network Configuration Required</h2>
+            <p class="text-white/60 text-sm leading-relaxed">
+              To enable public world video proxying safely via <code class="bg-black/40 px-1 py-0.5 rounded text-blue-300">localhost.youtube.com</code>, we need to add a local route to your Windows hosts file.
+            </p>
+            <p class="text-white/60 text-xs mt-2 italic border-l-2 border-white/10 pl-3">
+              This requires Administrator privileges to modify: <br/>C:\Windows\System32\drivers\etc\hosts
+            </p>
+          </div>
+          <div class="flex flex-col gap-3 pt-4">
+            <button @click="acceptHostsPrompt" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2">
+              <i class="bi bi-shield-check"></i> Allow (Requires Admin)
+            </button>
+            <div class="flex gap-3">
+              <button @click="declineHostsPrompt(false)" class="flex-1 bg-white/5 hover:bg-white/10 text-white/70 py-3 px-6 rounded-xl transition-all text-sm font-semibold">
+                Not Now
+              </button>
+              <button @click="declineHostsPrompt(true)" class="flex-1 bg-white/5 hover:bg-red-500/20 hover:text-red-400 text-white/50 py-3 px-6 rounded-xl transition-all text-sm">
+                Don't Ask Again
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

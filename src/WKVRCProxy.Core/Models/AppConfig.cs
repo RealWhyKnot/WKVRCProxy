@@ -39,4 +39,7 @@ public class AppConfig
 
     [JsonPropertyName("customVrcPath")]
     public string? CustomVrcPath { get; set; }
+
+    [JsonPropertyName("bypassHostsSetupDeclined")]
+    public bool BypassHostsSetupDeclined { get; set; } = false;
 }

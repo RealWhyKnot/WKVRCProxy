@@ -34,6 +34,15 @@ class Program
             string portStr = File.ReadAllText(portFile).Trim();
             if (!int.TryParse(portStr, out int port)) throw new Exception("Link data corrupted.");
 
+            string relayPortFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "relay_port.dat");
+            int relayPort = 0;
+            if (File.Exists(relayPortFile)) {
+                try {
+                    string rpStr = File.ReadAllText(relayPortFile).Trim();
+                    int.TryParse(rpStr, out relayPort);
+                } catch { } // Don't crash redirector if missing or locked
+            }
+
             var payload = new ResolvePayload { Args = args };
             var envVars = Environment.GetEnvironmentVariables();
             foreach (System.Collections.DictionaryEntry de in envVars)

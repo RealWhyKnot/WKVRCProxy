@@ -29,6 +29,12 @@ class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--setup-hosts")
+        {
+            SetupHostsBypass();
+            return;
+        }
+
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
         
         try
@@ -60,12 +66,35 @@ class Program
         var patcherService = new PatcherService();
         var ipcServer = new WebSocketIpcServer();
         var tier2Client = new Tier2WebSocketClient(_logger);
+        var hostsManager = new HostsManager();
+        var relayPortManager = new RelayPortManager();
 
         _coordinator.Register(logMonitor);
         _coordinator.Register(codecInstaller);
         _coordinator.Register(patcherService);
         _coordinator.Register(ipcServer);
         _coordinator.Register(tier2Client);
+        _coordinator.Register(hostsManager);
+        _coordinator.Register(relayPortManager);
+
+        hostsManager.OnIpcRequest += (type, data) => {
+            if (_isWindowReady) {
+                try {
+                    _window?.Invoke(() => {
+                        _window?.SendWebMessage(JsonSerializer.Serialize(new { type = type, data = data }));
+                    });
+                } catch { }
+            }
+            else {
+                // Background delay and retry if window not ready
+                Task.Run(async () => {
+                    while (!_isWindowReady) await Task.Delay(200);
+                    _window?.Invoke(() => {
+                        _window?.SendWebMessage(JsonSerializer.Serialize(new { type = type, data = data }));
+                    });
+                });
+            }
+        };
 
         var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client);
         ipcServer.OnResolveRequested += async (payload) => await resEngine.ResolveAsync(payload);
@@ -138,6 +167,23 @@ class Program
         _logger?.Dispose();
     }
 
+    private static void SetupHostsBypass()
+    {
+        try
+        {
+            string hostsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers", "etc", "hosts");
+            File.AppendAllText(hostsPath, "\r\n127.0.0.1 localhost.youtube.com\r\n");
+            
+            Process.Start(new ProcessStartInfo("ipconfig", "/flushdns") { CreateNoWindow = true, UseShellExecute = false })?.WaitForExit();
+        }
+        catch (Exception ex)
+        {
+            string crashLog = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "hosts_setup_error.log");
+            File.WriteAllText(crashLog, "SETUP ERROR: " + ex.ToString());
+        }
+        Environment.Exit(0);
+    }
+
     private static void HandleWebMessage(string message)
     {
         _isWindowReady = true; // UI is now alive and safe to receive messages
@@ -168,6 +214,7 @@ class Program
                             _settings.Config.ForceIPv4 = newConfig.ForceIPv4;
                             _settings.Config.AutoPatchOnStart = newConfig.AutoPatchOnStart;
                             _settings.Config.CustomVrcPath = newConfig.CustomVrcPath;
+                            _settings.Config.BypassHostsSetupDeclined = newConfig.BypassHostsSetupDeclined;
                             _settings.Save();
                         }
                     }
@@ -181,6 +228,17 @@ class Program
                             _coordinator?.GetModule<PatcherService>().UpdateToolsDir(dialog.FileName);
                             _window?.SendWebMessage(JsonSerializer.Serialize(new { type = "CONFIG", data = _settings.Config }));
                         }
+                    });
+                    break;
+                case "HOSTS_SETUP_ACCEPTED":
+                    _coordinator?.GetModule<HostsManager>().HandleUserResponse(true);
+                    break;
+                case "HOSTS_SETUP_DECLINED":
+                    _coordinator?.GetModule<HostsManager>().HandleUserResponse(false);
+                    break;
+                case "REQUEST_HOSTS_SETUP":
+                    Task.Run(() => {
+                        _coordinator?.GetModule<HostsManager>().RequestBypassAsync();
                     });
                     break;
             }
