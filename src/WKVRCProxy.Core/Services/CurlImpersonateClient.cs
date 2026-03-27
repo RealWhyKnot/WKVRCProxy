@@ -12,15 +12,21 @@ public class CurlImpersonateClient : IProxyModule
     public string Name => "CurlImpersonateClient";
     private Logger? _logger;
     private string _executablePath = "";
+    public bool IsAvailable { get; private set; }
 
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
         _executablePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "curl-impersonate-win.exe");
         
-        if (!File.Exists(_executablePath))
+        if (File.Exists(_executablePath))
         {
-            _logger.Warning("curl-impersonate-win.exe not found at: " + _executablePath);
+            IsAvailable = true;
+        }
+        else
+        {
+            IsAvailable = false;
+            _logger.Warning("curl-impersonate-win.exe not found at: " + _executablePath + ". Relay will use standard HttpClient for TLS-sensitive domains.");
         }
 
         return Task.CompletedTask;

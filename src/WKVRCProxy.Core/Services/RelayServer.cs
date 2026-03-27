@@ -198,7 +198,7 @@ public class RelayServer : IProxyModule, IDisposable
             Stream? sourceStream = null;
             HttpResponseMessage? response = null;
 
-            if (rule.UseCurlImpersonate && _curlClient != null)
+            if (rule.UseCurlImpersonate && _curlClient != null && _curlClient.IsAvailable)
             {
                 var dict = new Dictionary<string, string>();
                 foreach (var h in outboundRequest.Headers)

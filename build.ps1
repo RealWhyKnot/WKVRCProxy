@@ -57,25 +57,14 @@ if ($Versions.deno -ne $LatestDenoVersion) {
     Remove-Item $ZipPath
     $Versions.deno = $LatestDenoVersion
 }
-# 3. Fetch Latest curl-impersonate-win
-try {
-    $CurlImpRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/deedy5/curl-impersonate-win/releases/latest" -ErrorAction Stop
-    $LatestCurlImpVersion = $CurlImpRelease.tag_name
-
-    if ($Versions.curlimp -ne $LatestCurlImpVersion) {
-        Write-Host "Updating curl-impersonate to $LatestCurlImpVersion..." -ForegroundColor Yellow
-        $DownloadUrl = ($CurlImpRelease.assets | Where-Object { $_.name -match "curl-impersonate-.*-chrome-windows-x86_64\.zip" }).browser_download_url
-        if (!$DownloadUrl) {
-            $DownloadUrl = ($CurlImpRelease.assets | Where-Object { $_.name -match ".*windows.*\.zip" } | Select-Object -First 1).browser_download_url
-        }
-        $ZipPath = Join-Path $VendorDir "curlimp.zip"
-        Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath
-        Expand-Archive -Path $ZipPath -DestinationPath $VendorDir -Force
-        Remove-Item $ZipPath
-        $Versions.curlimp = $LatestCurlImpVersion
-    }
-} catch {
-    Write-Host "Warning: Failed to fetch curl-impersonate release. Skipping TLS impersonate updates." -ForegroundColor Yellow
+# 3. curl-impersonate-win (optional - no upstream Windows binaries exist)
+# If a curl-impersonate-win.exe is manually placed in vendor/, it will be packaged.
+# The relay server gracefully falls back to standard HttpClient when this is absent.
+$CurlImpVendorPath = Join-Path $VendorDir "curl-impersonate-win.exe"
+if (Test-Path $CurlImpVendorPath) {
+    Write-Host "Found vendor curl-impersonate-win.exe - will be packaged." -ForegroundColor Green
+} else {
+    Write-Host "Note: curl-impersonate-win.exe not in vendor/. Relay will use standard HttpClient for TLS-sensitive domains." -ForegroundColor Yellow
 }
 
 # 4. Fetch and Compile bgutil-ytdlp-pot-provider implementation
@@ -141,7 +130,9 @@ Write-Host "Building Version: $FullVersion" -ForegroundColor Magenta
 # --- Inject Version into Store ---
 $AppStorePath = "src/WKVRCProxy.UI/ui/src/stores/appStore.ts"
 $StoreContent = Get-Content $AppStorePath -Raw
-$NewStoreContent = $StoreContent -replace "version = ref\('(.+?)'\)", "version = ref('$FullVersion')"
+$RegexPattern = 'version = ref\(''(.+?)''\)'
+$RegexReplace = 'version = ref(''{0}'')' -f $FullVersion
+$NewStoreContent = $StoreContent -replace $RegexPattern, $RegexReplace
 Set-Content $AppStorePath $NewStoreContent
 
 # --- Build Frontend ---
@@ -170,8 +161,8 @@ Move-Item (Join-Path $BuildDir "WKVRCProxy.Redirector.exe") (Join-Path $ToolsDir
 
 Copy-Item -Path "src/WKVRCProxy.UI/wwwroot" -Destination $BuildDir -Recurse -Force
 Copy-Item (Join-Path $VendorDir "yt-dlp.exe") (Join-Path $ToolsDir "yt-dlp.exe")
-if (Test-Path (Join-Path $VendorDir "curl-impersonate-chrome.exe")) {
-    Copy-Item (Join-Path $VendorDir "curl-impersonate-chrome.exe") (Join-Path $ToolsDir "curl-impersonate-win.exe")
+if (Test-Path (Join-Path $VendorDir "curl-impersonate-win.exe")) {
+    Copy-Item (Join-Path $VendorDir "curl-impersonate-win.exe") (Join-Path $ToolsDir "curl-impersonate-win.exe")
 }
 Copy-Item (Join-Path $VendorDir "bgutil-ytdlp-pot-provider.exe") (Join-Path $ToolsDir "bgutil-ytdlp-pot-provider.exe")
 
