@@ -8,6 +8,7 @@ import HistoryView from './views/HistoryView.vue'
 import WhyKnotView from './views/WhyKnotView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
+import RelayView from './views/RelayView.vue'
 
 const appStore = useAppStore()
 
@@ -108,6 +109,7 @@ onMounted(() => {
             <DashboardView v-if="appStore.activeTab === 'dashboard'" />
             <HistoryView v-if="appStore.activeTab === 'history'" />
             <WhyKnotView v-if="appStore.activeTab === 'whyknot'" />
+            <RelayView v-if="appStore.activeTab === 'relay'" />
             <LogsView v-if="appStore.activeTab === 'logs'" />
             <SettingsView v-if="appStore.activeTab === 'settings'" />
           </div>

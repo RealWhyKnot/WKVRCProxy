@@ -1,6 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
+export interface RelayEvent {
+  id: string;
+  timestamp: string;
+  targetUrl: string;
+  method: string;
+  statusCode: number;
+  bytesTransferred: number;
+}
+
 export interface LogEntry {
   Timestamp: string;
   Level: number;
@@ -67,9 +76,10 @@ export const useAppStore = defineStore('app', () => {
   })
   
   const showHostsPrompt = ref(false)
+  const relayEvents = ref<RelayEvent[]>([])
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.3.26.2-4C43')
+  const version = ref('2026.3.26.4-0E6E')
 
   function handleMessage(message: string) {
     try {
@@ -86,6 +96,15 @@ export const useAppStore = defineStore('app', () => {
         status.value = parsed.data
       } else if (parsed.type === 'PROMPT_HOSTS_SETUP') {
         showHostsPrompt.value = true
+      } else if (parsed.type === 'RELAY_EVENT') {
+        const e = parsed.data as RelayEvent;
+        const idx = relayEvents.value.findIndex(x => x.id === e.id);
+        if (idx >= 0) {
+          relayEvents.value[idx] = e;
+        } else {
+          relayEvents.value.unshift(e);
+          if (relayEvents.value.length > 100) relayEvents.value.pop();
+        }
       }
     } catch (e) { }
   }
@@ -140,9 +159,12 @@ export const useAppStore = defineStore('app', () => {
     saveConfig,
     pickVrcPath,
     wipeTools,
-    terminate
+    terminate,
+    relayEvents
   }
 })
+
+
 
 
 

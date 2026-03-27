@@ -68,6 +68,7 @@ class Program
         var tier2Client = new Tier2WebSocketClient(_logger);
         var hostsManager = new HostsManager();
         var relayPortManager = new RelayPortManager();
+        var proxyRuleManager = new ProxyRuleManager();
         var relayServer = new RelayServer();
 
         _coordinator.Register(logMonitor);
@@ -77,6 +78,7 @@ class Program
         _coordinator.Register(tier2Client);
         _coordinator.Register(hostsManager);
         _coordinator.Register(relayPortManager);
+        _coordinator.Register(proxyRuleManager);
         _coordinator.Register(relayServer);
 
         hostsManager.OnIpcRequest += (type, data) => {
@@ -95,6 +97,16 @@ class Program
                         _window?.SendWebMessage(JsonSerializer.Serialize(new { type = type, data = data }));
                     });
                 });
+            }
+        };
+
+        relayServer.OnRelayEvent += (relayEvent) => {
+            if (_isWindowReady) {
+                try {
+                    _window?.Invoke(() => {
+                        _window?.SendWebMessage(JsonSerializer.Serialize(new { type = "RELAY_EVENT", data = relayEvent }));
+                    });
+                } catch { }
             }
         };
 

@@ -8,22 +8,22 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using WKVRCProxy.Core.Logging;
+using WKVRCProxy.Core.Models;
 
 namespace WKVRCProxy.Core.Services;
 
 public class RelayServer : IProxyModule, IDisposable
 {
     public string Name => "RelayServer";
+    public event Action<RelayEvent>? OnRelayEvent;
 
     private Logger? _logger;
     private IModuleContext? _context;
     private HttpListener? _listener;
     private CancellationTokenSource _cts = new();
     private RelayPortManager? _portManager;
+    private ProxyRuleManager? _ruleManager;
     private readonly HttpClient _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-    private static readonly HashSet<string> SafeHeaders = new(StringComparer.OrdinalIgnoreCase) {
-        "Range", "Accept", "Accept-Language", "Accept-Encoding", "Referer", "Connection", "Keep-Alive"
-    };
 
     public Task InitializeAsync(IModuleContext context)
     {
@@ -34,6 +34,7 @@ public class RelayServer : IProxyModule, IDisposable
         try
         {
             _portManager = context.GetModule<RelayPortManager>();
+            _ruleManager = context.GetModule<ProxyRuleManager>();
             int port = _portManager.CurrentPort;
 
             if (port == 0)
@@ -101,21 +102,57 @@ public class RelayServer : IProxyModule, IDisposable
 
             _logger?.Trace("Relaying request: " + context.Request.HttpMethod + " -> " + targetUrl);
 
+            var relayEvent = new RelayEvent {
+                TargetUrl = targetUrl,
+                Method = context.Request.HttpMethod,
+                StatusCode = 0,
+                BytesTransferred = 0
+            };
+            OnRelayEvent?.Invoke(relayEvent);
+
             using var outboundRequest = new HttpRequestMessage(new HttpMethod(context.Request.HttpMethod), targetUrl);
-            
+
+            var uri = new Uri(targetUrl);
+            ProxyRule rule = _ruleManager?.GetRuleForDomain(uri.Host) ?? new ProxyRule();
+
             foreach (string key in context.Request.Headers.AllKeys)
             {
-                if (key != null && SafeHeaders.Contains(key))
+                if (key != null && rule.ForwardHeaders.Contains(key))
                 {
                     outboundRequest.Headers.TryAddWithoutValidation(key, context.Request.Headers[key]);
                 }
             }
             
-            outboundRequest.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            if (!string.IsNullOrEmpty(rule.OverrideUserAgent))
+            {
+                outboundRequest.Headers.UserAgent.ParseAdd(rule.OverrideUserAgent);
+            }
+            else
+            {
+                outboundRequest.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            }
+
+            if (rule.ForwardReferer == "always")
+            {
+                if (context.Request.Headers["Referer"] != null)
+                   outboundRequest.Headers.Referrer = new Uri(context.Request.Headers["Referer"]!);
+            }
+            else if (rule.ForwardReferer == "never")
+            {
+                outboundRequest.Headers.Remove("Referer");
+            }
+            else if (rule.ForwardReferer == "same-origin" && context.Request.Headers["Referer"] != null)
+            {
+                 var refUri = new Uri(context.Request.Headers["Referer"]!);
+                 if (refUri.Host.EndsWith(uri.Host) || uri.Host.EndsWith(refUri.Host))
+                     outboundRequest.Headers.Referrer = refUri;
+            }
 
             using var response = await _httpClient.SendAsync(outboundRequest, HttpCompletionOption.ResponseHeadersRead, _cts.Token);
             
             context.Response.StatusCode = (int)response.StatusCode;
+            relayEvent.StatusCode = context.Response.StatusCode;
+            OnRelayEvent?.Invoke(relayEvent);
             
             foreach (var header in response.Headers.Concat(response.Content.Headers))
             {
@@ -136,11 +173,19 @@ public class RelayServer : IProxyModule, IDisposable
             using var sourceStream = await response.Content.ReadAsStreamAsync();
             try
             {
-                await sourceStream.CopyToAsync(context.Response.OutputStream, 81920, _cts.Token);
+                byte[] buffer = new byte[81920];
+                int bytesRead;
+                while ((bytesRead = await sourceStream.ReadAsync(buffer, 0, buffer.Length, _cts.Token)) > 0)
+                {
+                    await context.Response.OutputStream.WriteAsync(buffer, 0, bytesRead, _cts.Token);
+                    relayEvent.BytesTransferred += bytesRead;
+                }
             }
             catch (HttpListenerException) { /* Player closed connection to seek */ }
             catch (IOException) { /* Socket closed abruptly */ }
             catch (TaskCanceledException) { /* System shutting down */ }
+
+            OnRelayEvent?.Invoke(relayEvent);
         }
         catch (Exception ex)
         {
