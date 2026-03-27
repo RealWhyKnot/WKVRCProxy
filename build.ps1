@@ -23,7 +23,7 @@ New-Item -ItemType Directory $BuildDir -Force | Out-Null
 if (!(Test-Path $VendorDir)) { New-Item -ItemType Directory $VendorDir }
 
 # --- Dependency Tracking ---
-$Versions = @{ "ytdlp" = ""; "deno" = "" }
+$Versions = @{ "ytdlp" = ""; "deno" = ""; "curlimp" = ""; "bgutil" = "" }
 if (Test-Path $VersionFile) {
     $Versions = Get-Content $VersionFile | ConvertFrom-Json
 }
@@ -56,6 +56,67 @@ if ($Versions.deno -ne $LatestDenoVersion) {
     Expand-Archive -Path $ZipPath -DestinationPath $VendorDir -Force
     Remove-Item $ZipPath
     $Versions.deno = $LatestDenoVersion
+}
+# 3. Fetch Latest curl-impersonate-win
+try {
+    $CurlImpRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/deedy5/curl-impersonate-win/releases/latest" -ErrorAction Stop
+    $LatestCurlImpVersion = $CurlImpRelease.tag_name
+
+    if ($Versions.curlimp -ne $LatestCurlImpVersion) {
+        Write-Host "Updating curl-impersonate to $LatestCurlImpVersion..." -ForegroundColor Yellow
+        $DownloadUrl = ($CurlImpRelease.assets | Where-Object { $_.name -match "curl-impersonate-.*-chrome-windows-x86_64\.zip" }).browser_download_url
+        if (!$DownloadUrl) {
+            $DownloadUrl = ($CurlImpRelease.assets | Where-Object { $_.name -match ".*windows.*\.zip" } | Select-Object -First 1).browser_download_url
+        }
+        $ZipPath = Join-Path $VendorDir "curlimp.zip"
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath
+        Expand-Archive -Path $ZipPath -DestinationPath $VendorDir -Force
+        Remove-Item $ZipPath
+        $Versions.curlimp = $LatestCurlImpVersion
+    }
+} catch {
+    Write-Host "Warning: Failed to fetch curl-impersonate release. Skipping TLS impersonate updates." -ForegroundColor Yellow
+}
+
+# 4. Fetch and Compile bgutil-ytdlp-pot-provider implementation
+try {
+    $BgutilRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/Brainicism/bgutil-ytdlp-pot-provider/commits/main" -ErrorAction SilentlyContinue
+} catch {
+    $BgutilRelease = $null
+}
+
+if (!$BgutilRelease) {
+    try {
+        $BgutilRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/Brainicism/bgutil-ytdlp-pot-provider/commits/master" -ErrorAction Stop
+    } catch {
+        Write-Host "Warning: Failed to fetch bgutil commits. GitHub API might be rate limited." -ForegroundColor Yellow
+        $BgutilRelease = $null
+    }
+}
+
+if ($BgutilRelease) {
+    $LatestBgutilCommit = $BgutilRelease.sha.Substring(0, 7)
+
+    if ($Versions.bgutil -ne $LatestBgutilCommit) {
+        Write-Host "Compiling bgutil-ytdlp-pot-provider server at commit $LatestBgutilCommit..." -ForegroundColor Yellow
+        $BgutilDir = Join-Path $VendorDir "bgutil_repo"
+        if (Test-Path $BgutilDir) { Remove-Item -Path $BgutilDir -Recurse -Force }
+        
+        git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git $BgutilDir
+        
+        Push-Location (Join-Path $BgutilDir "server")
+        & (Join-Path $VendorDir "deno.exe") install
+        & (Join-Path $VendorDir "deno.exe") compile -A --output (Join-Path $VendorDir "bgutil-ytdlp-pot-provider.exe") src/main.ts
+        Pop-Location
+        
+        Remove-Item -Path $BgutilDir -Recurse -Force
+        
+        if ($null -eq $Versions.psobject.properties['bgutil']) {
+            $Versions | Add-Member -NotePropertyName bgutil -NotePropertyValue $LatestBgutilCommit
+        } else {
+            $Versions.bgutil = $LatestBgutilCommit
+        }
+    }
 }
 
 $Versions | ConvertTo-Json | Out-File $VersionFile
@@ -109,7 +170,10 @@ Move-Item (Join-Path $BuildDir "WKVRCProxy.Redirector.exe") (Join-Path $ToolsDir
 
 Copy-Item -Path "src/WKVRCProxy.UI/wwwroot" -Destination $BuildDir -Recurse -Force
 Copy-Item (Join-Path $VendorDir "yt-dlp.exe") (Join-Path $ToolsDir "yt-dlp.exe")
-Copy-Item (Join-Path $VendorDir "deno.exe") (Join-Path $ToolsDir "deno.exe")
+if (Test-Path (Join-Path $VendorDir "curl-impersonate-chrome.exe")) {
+    Copy-Item (Join-Path $VendorDir "curl-impersonate-chrome.exe") (Join-Path $ToolsDir "curl-impersonate-win.exe")
+}
+Copy-Item (Join-Path $VendorDir "bgutil-ytdlp-pot-provider.exe") (Join-Path $ToolsDir "bgutil-ytdlp-pot-provider.exe")
 
 # Cleanup
 Get-ChildItem -Path $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force

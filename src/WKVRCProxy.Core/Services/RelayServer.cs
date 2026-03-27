@@ -23,6 +23,8 @@ public class RelayServer : IProxyModule, IDisposable
     private CancellationTokenSource _cts = new();
     private RelayPortManager? _portManager;
     private ProxyRuleManager? _ruleManager;
+    private CurlImpersonateClient? _curlClient;
+    private PotProviderService? _potProvider;
     private readonly HttpClient _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
 
     public Task InitializeAsync(IModuleContext context)
@@ -35,6 +37,8 @@ public class RelayServer : IProxyModule, IDisposable
         {
             _portManager = context.GetModule<RelayPortManager>();
             _ruleManager = context.GetModule<ProxyRuleManager>();
+            _curlClient = context.GetModule<CurlImpersonateClient>();
+            _potProvider = context.GetModule<PotProviderService>();
             int port = _portManager.CurrentPort;
 
             if (port == 0)
@@ -110,10 +114,21 @@ public class RelayServer : IProxyModule, IDisposable
             };
             OnRelayEvent?.Invoke(relayEvent);
 
-            using var outboundRequest = new HttpRequestMessage(new HttpMethod(context.Request.HttpMethod), targetUrl);
-
             var uri = new Uri(targetUrl);
             ProxyRule rule = _ruleManager?.GetRuleForDomain(uri.Host) ?? new ProxyRule();
+
+            if (rule.UsePoTokenProvider && _potProvider != null)
+            {
+                string? videoId = System.Web.HttpUtility.ParseQueryString(uri.Query).Get("id") ?? "unknown";
+                string? visitorData = "dummy-visitor-data";
+                string? token = await _potProvider.GetPotTokenAsync(visitorData, videoId);
+                if (!string.IsNullOrEmpty(token))
+                {
+                    targetUrl += (targetUrl.Contains("?") ? "&" : "?") + "pot=" + token;
+                }
+            }
+
+            using var outboundRequest = new HttpRequestMessage(new HttpMethod(context.Request.HttpMethod), targetUrl);
 
             foreach (string key in context.Request.Headers.AllKeys)
             {
@@ -148,29 +163,110 @@ public class RelayServer : IProxyModule, IDisposable
                      outboundRequest.Headers.Referrer = refUri;
             }
 
-            using var response = await _httpClient.SendAsync(outboundRequest, HttpCompletionOption.ResponseHeadersRead, _cts.Token);
-            
-            context.Response.StatusCode = (int)response.StatusCode;
+            Stream? sourceStream = null;
+            HttpResponseMessage? response = null;
+
+            if (rule.UseCurlImpersonate && _curlClient != null)
+            {
+                var dict = new Dictionary<string, string>();
+                foreach (var h in outboundRequest.Headers)
+                {
+                    dict[h.Key] = string.Join(", ", h.Value);
+                }
+                sourceStream = await _curlClient.SendRequestAsync(context.Request.HttpMethod, targetUrl, dict);
+                
+                // Read headers from Curl -i output
+                var headerLines = new List<string>();
+                var currentLine = new StringBuilder();
+                int emptyLineCount = 0;
+
+                while (true)
+                {
+                    byte[] b = new byte[1];
+                    int r = await sourceStream.ReadAsync(b, 0, 1, _cts.Token);
+                    if (r == 0) break;
+                    
+                    if (b[0] == '\r') continue;
+                    
+                    if (b[0] == '\n')
+                    {
+                        if (currentLine.Length == 0)
+                        {
+                            emptyLineCount++;
+                            if (emptyLineCount >= 1) break; // Finished headers
+                        }
+                        else
+                        {
+                            headerLines.Add(currentLine.ToString());
+                            currentLine.Clear();
+                            emptyLineCount = 0;
+                        }
+                    }
+                    else
+                    {
+                        currentLine.Append((char)b[0]);
+                        emptyLineCount = 0;
+                    }
+                }
+
+                if (headerLines.Count > 0 && headerLines[0].StartsWith("HTTP/"))
+                {
+                    var parts = headerLines[0].Split(' ', 3);
+                    if (parts.Length >= 2 && int.TryParse(parts[1], out int sc))
+                    {
+                        context.Response.StatusCode = sc;
+                    }
+                    headerLines.RemoveAt(0);
+                }
+
+                foreach(var line in headerLines)
+                {
+                    int idx = line.IndexOf(':');
+                    if (idx > 0)
+                    {
+                        string key = line.Substring(0, idx).Trim();
+                        string value = line.Substring(idx + 1).Trim();
+                        
+                        if (key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (long.TryParse(value, out long len)) context.Response.ContentLength64 = len;
+                            continue;
+                        }
+                        try { context.Response.Headers.Add(key, value); } catch { }
+                    }
+                }
+                
+                // Leave the underlying stream open for the binary copy below
+            }
+            else
+            {
+                response = await _httpClient.SendAsync(outboundRequest, HttpCompletionOption.ResponseHeadersRead, _cts.Token);
+                
+                context.Response.StatusCode = (int)response.StatusCode;
+                
+                foreach (var header in response.Headers.Concat(response.Content.Headers))
+                {
+                    string key = header.Key;
+                    string value = string.Join(", ", header.Value);
+                    
+                    if (key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+                    
+                    if (key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (long.TryParse(value, out long len)) context.Response.ContentLength64 = len;
+                        continue;
+                    }
+
+                    try { context.Response.Headers.Add(key, value); } catch { }
+                }
+
+                sourceStream = await response.Content.ReadAsStreamAsync();
+            }
+
             relayEvent.StatusCode = context.Response.StatusCode;
             OnRelayEvent?.Invoke(relayEvent);
             
-            foreach (var header in response.Headers.Concat(response.Content.Headers))
-            {
-                string key = header.Key;
-                string value = string.Join(", ", header.Value);
-                
-                if (key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
-                
-                if (key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (long.TryParse(value, out long len)) context.Response.ContentLength64 = len;
-                    continue;
-                }
-
-                try { context.Response.Headers.Add(key, value); } catch { }
-            }
-
-            using var sourceStream = await response.Content.ReadAsStreamAsync();
             try
             {
                 byte[] buffer = new byte[81920];
