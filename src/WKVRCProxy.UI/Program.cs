@@ -70,6 +70,8 @@ class Program
         var relayPortManager = new RelayPortManager();
         var proxyRuleManager = new ProxyRuleManager();
         var relayServer = new RelayServer();
+        var curlClient = new CurlImpersonateClient();
+        var potProvider = new PotProviderService();
         var integrityManager = new RelayIntegrityManager();
 
         _coordinator.Register(logMonitor);
@@ -80,6 +82,8 @@ class Program
         _coordinator.Register(hostsManager);
         _coordinator.Register(relayPortManager);
         _coordinator.Register(proxyRuleManager);
+        _coordinator.Register(curlClient);
+        _coordinator.Register(potProvider);
         _coordinator.Register(relayServer);
         _coordinator.Register(integrityManager);
 
