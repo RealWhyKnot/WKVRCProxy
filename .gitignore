@@ -34,6 +34,8 @@ VRCYTProxy*.zip
 _tmp*/
 *.log
 build_log.ps1.txt
+build.txt
+build.utf8.txt
 wrapper_state.json
 version.txt
 system.db
