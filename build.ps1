@@ -9,8 +9,11 @@ if (Test-Path $BuildDir) {
     Write-Host "Cleaning dist folder..." -ForegroundColor Cyan
     
     # Terminate running instances to release file locks
+    Get-Process "WKVRCProxy.UI" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "WKVRCProxy" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "redirector" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process "bgutil-ytdlp-pot-provider" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process "curl-impersonate-win" -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 1
 
     try {

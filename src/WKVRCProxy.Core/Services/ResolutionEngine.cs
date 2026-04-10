@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -15,6 +16,7 @@ using WKVRCProxy.Core.Models;
 
 namespace WKVRCProxy.Core.Services;
 
+[SupportedOSPlatform("windows")]
 public class ResolutionEngine
 {
     private readonly Logger _logger;
@@ -326,6 +328,7 @@ public class ResolutionEngine
             process.Exited += (s, e) => { tcs.TrySetResult(null); };
 
             process.Start();
+            ProcessGuard.Register(process);
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 

@@ -214,46 +214,49 @@ public class PatcherService : IProxyModule, IDisposable
     {
         _isPatchDesired = false;
         _cts.Cancel();
-        
-        if (string.IsNullOrEmpty(_vrcToolsDir)) return;
 
-        try
+        // Restore yt-dlp.exe — only possible if we know the tools dir.
+        if (!string.IsNullOrEmpty(_vrcToolsDir))
         {
-            string targetPath = Path.Combine(_vrcToolsDir, "yt-dlp.exe");
-            string backupPath = Path.Combine(_vrcToolsDir, "yt-dlp-og.exe");
+            try
+            {
+                string targetPath = Path.Combine(_vrcToolsDir, "yt-dlp.exe");
+                string backupPath = Path.Combine(_vrcToolsDir, "yt-dlp-og.exe");
 
-            if (File.Exists(backupPath))
-            {
-                _logger?.Info("Restoring original yt-dlp.exe...");
-                if (File.Exists(targetPath)) File.Delete(targetPath);
-                File.Move(backupPath, targetPath);
-                _logger?.Success("Original state restored.");
+                if (File.Exists(backupPath))
+                {
+                    _logger?.Info("Restoring original yt-dlp.exe...");
+                    if (File.Exists(targetPath)) File.Delete(targetPath);
+                    File.Move(backupPath, targetPath);
+                    _logger?.Success("Original state restored.");
+                }
             }
-            
-            // Step 11: Deep Process Cleanup
-            _logger?.Trace("Performing deep process cleanup...");
-            foreach (var proc in Process.GetProcessesByName("curl-impersonate-win"))
+            catch (Exception ex)
             {
-                try { proc.Kill(); }
-                catch (Exception ex) { _logger?.Trace("Failed to kill curl-impersonate-win (PID " + proc.Id + "): " + ex.Message); }
+                _logger?.Error("Shutdown Restore Error: " + ex.Message);
             }
-            foreach (var proc in Process.GetProcessesByName("bgutil-ytdlp-pot-provider"))
-            {
-                try { proc.Kill(); }
-                catch (Exception ex) { _logger?.Trace("Failed to kill bgutil-ytdlp-pot-provider (PID " + proc.Id + "): " + ex.Message); }
-            }
-
-            string relayPortFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "relay_port.dat");
-            if (File.Exists(relayPortFile))
-            {
-                try { File.Delete(relayPortFile); }
-                catch (Exception ex) { _logger?.Trace("Failed to delete relay_port.dat: " + ex.Message); }
-            }
-            
         }
-        catch (Exception ex)
+
+        // Process cleanup — always runs regardless of tools dir or restore outcome.
+        // ProcessGuard (Job Object) handles the primary kill; this is a belt-and-suspenders
+        // fallback for any stray processes that were started outside the job.
+        _logger?.Trace("Performing process cleanup...");
+        foreach (var proc in Process.GetProcessesByName("curl-impersonate-win"))
         {
-            _logger?.Error("Shutdown Restore Error: " + ex.Message);
+            try { proc.Kill(); }
+            catch (Exception ex) { _logger?.Trace("Failed to kill curl-impersonate-win (PID " + proc.Id + "): " + ex.Message); }
+        }
+        foreach (var proc in Process.GetProcessesByName("bgutil-ytdlp-pot-provider"))
+        {
+            try { proc.Kill(); }
+            catch (Exception ex) { _logger?.Trace("Failed to kill bgutil-ytdlp-pot-provider (PID " + proc.Id + "): " + ex.Message); }
+        }
+
+        string relayPortFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "relay_port.dat");
+        if (File.Exists(relayPortFile))
+        {
+            try { File.Delete(relayPortFile); }
+            catch (Exception ex) { _logger?.Trace("Failed to delete relay_port.dat: " + ex.Message); }
         }
     }
 

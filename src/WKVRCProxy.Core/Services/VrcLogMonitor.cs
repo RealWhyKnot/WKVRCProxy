@@ -146,22 +146,19 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             string line = rawLine.Trim();
             if (string.IsNullOrEmpty(line)) continue;
 
-            bool isError = line.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0
-                        || line.IndexOf("exception", StringComparison.OrdinalIgnoreCase) >= 0;
-            bool isVideo = line.IndexOf("video", StringComparison.OrdinalIgnoreCase) >= 0
-                        || line.IndexOf("stream", StringComparison.OrdinalIgnoreCase) >= 0
-                        || line.IndexOf("avpro", StringComparison.OrdinalIgnoreCase) >= 0
-                        || line.IndexOf("yt-dlp", StringComparison.OrdinalIgnoreCase) >= 0
-                        || line.Contains("[VRC.");
-            bool isStructured = line.StartsWith("20") && line.Contains(" Log ")
-                             || line.StartsWith("20") && line.Contains(" Error ")
-                             || line.StartsWith("20") && line.Contains(" Warning ");
+            // Only forward lines directly relevant to video/proxy operation.
+            // Broad "error" matching generates too much noise from VRChat internals
+            // (avatar 404s, API model failures, SteamVR, StyleEngine, etc).
+            bool isVideoRelevant = line.IndexOf("yt-dlp", StringComparison.OrdinalIgnoreCase) >= 0
+                                || line.IndexOf("avpro", StringComparison.OrdinalIgnoreCase) >= 0
+                                || line.IndexOf("videoplayer", StringComparison.OrdinalIgnoreCase) >= 0
+                                || line.IndexOf("video component", StringComparison.OrdinalIgnoreCase) >= 0
+                                || line.Contains("[VRC.SDK3.Video]")
+                                || line.Contains("[VRC.SDK2.Video]");
 
-            if (isError)
-            {
-                _logger.LogWithSource(LogLevel.Warning, "VRChat", line);
-            }
-            else if (isVideo)
+            bool isStructured = line.StartsWith("20") && (line.Contains(" Log    ") || line.Contains(" Error  ") || line.Contains(" Warning"));
+
+            if (isVideoRelevant)
             {
                 _logger.LogWithSource(LogLevel.Debug, "VRChat", line);
             }

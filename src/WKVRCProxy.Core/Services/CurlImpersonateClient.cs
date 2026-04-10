@@ -2,11 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.Versioning;
 using System.Threading.Tasks;
 using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.Services;
 
+[SupportedOSPlatform("windows")]
 public class CurlImpersonateClient : IProxyModule
 {
     public string Name => "CurlImpersonateClient";
@@ -60,6 +62,7 @@ public class CurlImpersonateClient : IProxyModule
 
         var process = Process.Start(psi);
         if (process == null) throw new Exception("Failed to start curl-impersonate-win process.");
+        ProcessGuard.Register(process);
 
         _logger?.Trace("Spawned curl-impersonate process for: " + method + " " + url.Substring(0, Math.Min(80, url.Length)));
 

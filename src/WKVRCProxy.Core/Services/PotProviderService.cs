@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Net.Sockets;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -12,6 +13,7 @@ using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.Services;
 
+[SupportedOSPlatform("windows")]
 public class PotProviderService : IProxyModule, IDisposable
 {
     public string Name => "PotProviderService";
@@ -51,6 +53,7 @@ public class PotProviderService : IProxyModule, IDisposable
                 };
 
                 _providerProcess = Process.Start(psi);
+                ProcessGuard.Register(_providerProcess);
                 _logger.Trace("Started bgutil-ytdlp-pot-provider on port " + _port);
             }
             else

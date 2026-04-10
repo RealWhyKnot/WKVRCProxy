@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +13,7 @@ using WKVRCProxy.Core.Models;
 
 namespace WKVRCProxy.Core.Services;
 
+[SupportedOSPlatform("windows")]
 public class RelayServer : IProxyModule, IDisposable
 {
     public string Name => "RelayServer";
