@@ -121,7 +121,7 @@ class Program
             }
         };
 
-        var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager);
+        var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService);
         ipcServer.OnResolveRequested += async (payload) => await resEngine.ResolveAsync(payload);
         logMonitor.OnVrcPathDetected += (path) => patcherService.UpdateToolsDir(path);
         
@@ -161,6 +161,7 @@ class Program
         _window.RegisterWindowCreatedHandler((s, a) => {
             Task.Run(async () => {
                 try {
+                    RunPreflightChecks(baseDir);
                     await _coordinator.InitializeAllAsync();
                     if (_settings.Config.AutoPatchOnStart) {
                         string wrapperPath = Path.Combine(baseDir, "tools", "redirector.exe");
@@ -182,6 +183,26 @@ class Program
 
         _window.WaitForClose();
         OnShutdown();
+    }
+
+    private static void RunPreflightChecks(string baseDir)
+    {
+        string toolsDir = Path.Combine(baseDir, "tools");
+
+        string redirector = Path.Combine(toolsDir, "redirector.exe");
+        if (!File.Exists(redirector))
+            _logger?.Fatal("PREFLIGHT: redirector.exe missing from tools/ — patching is disabled. Reinstall or rebuild.");
+
+        string ytdlp = Path.Combine(toolsDir, "yt-dlp.exe");
+        if (!File.Exists(ytdlp))
+            _logger?.Warning("PREFLIGHT: yt-dlp.exe missing from tools/ — Tier 1 resolution will fail.");
+
+        string defaultVrcTools = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "Low",
+            "VRChat", "VRChat", "Tools");
+        bool hasCustomPath = !string.IsNullOrEmpty(_settings?.Config.CustomVrcPath);
+        if (!Directory.Exists(defaultVrcTools) && !hasCustomPath)
+            _logger?.Warning("PREFLIGHT: VRChat Tools folder not found. Launch VRChat at least once, or set a custom path in Settings.");
     }
 
     private static void OnShutdown()

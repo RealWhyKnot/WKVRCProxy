@@ -172,6 +172,16 @@ public class Logger : IDisposable
             _queue.Add(new QueueItem { Entry = entry, Exception = ex });
     }
 
+    public void LogWithSource(LogLevel level, string source, string message)
+    {
+        if (!_settings.Config.DebugMode && (level == LogLevel.Trace || level == LogLevel.Debug))
+            return;
+
+        var entry = new LogEntry { Timestamp = DateTime.Now, Level = level, Message = message, Source = source };
+        if (!_queue.IsAddingCompleted)
+            _queue.Add(new QueueItem { Entry = entry });
+    }
+
     public void Trace(string msg, Exception? ex = null)   => Log(LogLevel.Trace, msg, ex);
     public void Debug(string msg, Exception? ex = null)   => Log(LogLevel.Debug, msg, ex);
     public void Info(string msg, Exception? ex = null)    => Log(LogLevel.Info, msg, ex);

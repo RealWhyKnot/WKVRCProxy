@@ -24,6 +24,7 @@ public class ResolutionEngine
     private readonly Tier2WebSocketClient _tier2Client;
     private readonly HostsManager _hostsManager;
     private readonly RelayPortManager _relayPortManager;
+    private readonly PatcherService _patcher;
 
     public event Action<string, object>? OnStatusUpdate;
     private int _activeResolutions = 0;
@@ -31,7 +32,7 @@ public class ResolutionEngine
         { "tier1", 0 }, { "tier2", 0 }, { "tier3", 0 }, { "tier4", 0 }
     };
 
-    public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager)
+    public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager, PatcherService patcher)
     {
         _logger = logger;
         _settings = settings;
@@ -39,6 +40,7 @@ public class ResolutionEngine
         _tier2Client = tier2Client;
         _hostsManager = hostsManager;
         _relayPortManager = relayPortManager;
+        _patcher = patcher;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(_settings.Config.UserAgent);
 
@@ -262,9 +264,25 @@ public class ResolutionEngine
         return await RunYtDlp("yt-dlp-og.exe", args);
     }
 
+    // yt-dlp-og.exe lives in the VRChat Tools folder (created by PatcherService as a backup).
+    // All other binaries (yt-dlp.exe, redirector.exe) live in dist/tools/.
+    private string GetBinaryPath(string binary)
+    {
+        if (binary == "yt-dlp-og.exe")
+        {
+            string? toolsDir = _patcher.VrcToolsDir;
+            if (!string.IsNullOrEmpty(toolsDir))
+            {
+                string vrcPath = Path.Combine(toolsDir, binary);
+                if (File.Exists(vrcPath)) return vrcPath;
+            }
+        }
+        return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", binary);
+    }
+
     private async Task<string?> RunYtDlp(string binary, List<string> args)
     {
-        string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", binary);
+        string path = GetBinaryPath(binary);
         if (!File.Exists(path))
         {
             _logger.Error(binary + " not found at: " + path);

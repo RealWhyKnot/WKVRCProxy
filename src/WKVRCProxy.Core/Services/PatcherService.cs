@@ -14,7 +14,8 @@ namespace WKVRCProxy.Core.Services;
 public class PatcherService : IProxyModule, IDisposable
 {
     public string Name => "Patcher";
-    
+    public string? VrcToolsDir => _vrcToolsDir;
+
     private Logger? _logger;
     private IModuleContext? _context;
     private string? _vrcToolsDir;
@@ -198,7 +199,7 @@ public class PatcherService : IProxyModule, IDisposable
             _lastPatchTime = DateTime.Now;
             _logger?.Warning("Patch integrity restored (yt-dlp.exe was modified or replaced).");
         }
-        catch (Exception ex) { _logger?.Error("Failed to restore patch integrity: " + ex.Message, ex); }
+        catch (Exception ex) { _logger?.Warning("Failed to restore patch integrity (file in use, will retry): " + ex.Message); }
     }
 
     private bool IsFileSame(string path1, string path2)

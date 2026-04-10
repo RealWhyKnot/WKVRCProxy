@@ -12,16 +12,18 @@ public class VrcLogMonitor : IProxyModule, IDisposable
 {
     public string Name => "LogMonitor";
     private Logger? _logger;
+    private SettingsManager? _settings;
     private readonly CancellationTokenSource _cts = new();
     private Task? _monitorTask;
     private bool _vrcToolsDetected = false;
-    
+
     public string CurrentPlayer { get; private set; } = "AVPro";
     public event Action<string>? OnVrcPathDetected;
-    
+
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
+        _settings = context.Settings;
         _logger.Trace("Initializing VrcLogMonitor...");
         _logger.Info("Starting VRChat Log Monitor...");
         _monitorTask = Task.Run(MonitorLoop);
@@ -116,6 +118,8 @@ public class VrcLogMonitor : IProxyModule, IDisposable
                                         _logger?.Info("Player Engine Switch Detected: AVPro Video Player");
                                     }
                                 }
+
+                                ForwardVrcLogLines(newContent);
                             }
                         }
                     }
@@ -128,6 +132,42 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             {
                 _logger?.Trace("VrcLogMonitor Error: " + ex.Message);
                 await Task.Delay(5000, _cts.Token);
+            }
+        }
+    }
+
+    private void ForwardVrcLogLines(string content)
+    {
+        if (_logger == null) return;
+        bool debugMode = _settings?.Config.DebugMode ?? false;
+
+        foreach (string rawLine in content.Split('\n'))
+        {
+            string line = rawLine.Trim();
+            if (string.IsNullOrEmpty(line)) continue;
+
+            bool isError = line.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0
+                        || line.IndexOf("exception", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool isVideo = line.IndexOf("video", StringComparison.OrdinalIgnoreCase) >= 0
+                        || line.IndexOf("stream", StringComparison.OrdinalIgnoreCase) >= 0
+                        || line.IndexOf("avpro", StringComparison.OrdinalIgnoreCase) >= 0
+                        || line.IndexOf("yt-dlp", StringComparison.OrdinalIgnoreCase) >= 0
+                        || line.Contains("[VRC.");
+            bool isStructured = line.StartsWith("20") && line.Contains(" Log ")
+                             || line.StartsWith("20") && line.Contains(" Error ")
+                             || line.StartsWith("20") && line.Contains(" Warning ");
+
+            if (isError)
+            {
+                _logger.LogWithSource(LogLevel.Warning, "VRChat", line);
+            }
+            else if (isVideo)
+            {
+                _logger.LogWithSource(LogLevel.Debug, "VRChat", line);
+            }
+            else if (debugMode && isStructured)
+            {
+                _logger.LogWithSource(LogLevel.Trace, "VRChat", line);
             }
         }
     }
