@@ -19,8 +19,8 @@ function openBrowser() {
 
       <div class="space-y-3">
         <h2 class="text-3xl font-black uppercase tracking-tighter italic text-white/90">WhyKnot.dev</h2>
-        <p class="text-white/40 text-[10px] font-bold uppercase tracking-[0.2em] leading-relaxed">
-          The cloud resolution and peer relay services are best experienced in a full browser environment.
+        <p class="text-white/55 text-[10px] font-bold uppercase tracking-[0.2em] leading-relaxed">
+          Cloud backup resolution service. Opens in your browser.
         </p>
       </div>
 

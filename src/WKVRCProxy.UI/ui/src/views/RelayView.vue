@@ -33,7 +33,7 @@ const formatBytes = (bytes: number) => {
     <div class="flex-grow bg-[#0a0a0c]/80 backdrop-blur-3xl border border-white/5 rounded-[32px] overflow-hidden flex flex-col shadow-2xl relative group">
       <div class="absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-1000 pointer-events-none"></div>
       
-      <div class="grid grid-cols-12 gap-4 px-8 py-5 border-b border-white/5 bg-black/40 backdrop-blur-md text-[9px] font-black uppercase tracking-[0.2em] text-white/30 sticky top-0 z-10 italic">
+      <div class="grid grid-cols-12 gap-4 px-8 py-5 border-b border-white/5 bg-black/40 backdrop-blur-md text-[9px] font-black uppercase tracking-[0.2em] text-white/55 sticky top-0 z-10 italic">
         <div class="col-span-2">Time</div>
         <div class="col-span-1">Method</div>
         <div class="col-span-6">Target</div>
@@ -52,7 +52,7 @@ const formatBytes = (bytes: number) => {
                class="grid grid-cols-12 gap-4 px-8 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors items-center">
             
             <!-- Time -->
-            <div class="col-span-2 font-mono text-[10px] text-white/50">
+            <div class="col-span-2 font-mono text-[10px] text-white/65">
               {{ new Date(evt.timestamp).toLocaleTimeString() }}
             </div>
             
@@ -64,7 +64,7 @@ const formatBytes = (bytes: number) => {
             </div>
 
             <!-- Target URL -->
-            <div class="col-span-6 truncate font-mono text-[10px] text-white/70" :title="evt.targetUrl">
+            <div class="col-span-6 truncate font-mono text-[10px] text-white/85" :title="evt.targetUrl">
               {{ evt.targetUrl }}
             </div>
 
@@ -77,7 +77,7 @@ const formatBytes = (bytes: number) => {
             </div>
 
             <!-- Transferred -->
-            <div class="col-span-2 text-right font-mono text-[10px] text-white/50">
+            <div class="col-span-2 text-right font-mono text-[10px] text-white/65">
               {{ formatBytes(evt.bytesTransferred) }}
             </div>
           </div>

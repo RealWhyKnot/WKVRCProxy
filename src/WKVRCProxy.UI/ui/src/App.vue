@@ -44,7 +44,7 @@ onMounted(() => {
           <i class="bi bi-exclamation-triangle-fill text-red-500 text-3xl"></i>
         </div>
         <h1 class="text-2xl font-black uppercase tracking-tighter italic">Link Failure</h1>
-        <p class="text-white/40 text-[9px] font-bold leading-relaxed uppercase tracking-[0.2em]">Unable to connect to system core.</p>
+        <p class="text-white/65 text-[11px] font-bold leading-relaxed uppercase tracking-[0.2em]">Unable to connect to system core.</p>
         <div class="flex justify-center gap-2">
           <div class="w-1 h-1 bg-red-500 rounded-full animate-bounce"></div>
           <div class="w-1 h-1 bg-red-500 rounded-full animate-bounce [animation-delay:0.2s]"></div>
@@ -90,7 +90,6 @@ onMounted(() => {
     <!-- 3D Background & Overlays -->
     <ThreeBackground :isReduced="appStore.activeTab !== 'dashboard'" />
     <div class="fixed inset-0 z-[1] pointer-events-none bg-[radial-gradient(circle_at_center,transparent_0%,#010103_85%)] opacity-90"></div>
-    <div class="fixed inset-0 z-[2] pointer-events-none bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03] mix-blend-overlay"></div>
 
     <!-- Sidebar -->
     <Sidebar class="z-20" />

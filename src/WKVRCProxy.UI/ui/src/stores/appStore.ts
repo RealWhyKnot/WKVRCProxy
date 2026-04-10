@@ -24,6 +24,8 @@ export interface HistoryEntry {
   Tier: string;
   Player: string;
   Success: boolean;
+  IsLive: boolean;
+  StreamType: string; // "live" | "vod" | "unknown"
 }
 
 export interface AppConfig {
@@ -79,7 +81,7 @@ export const useAppStore = defineStore('app', () => {
   const relayEvents = ref<RelayEvent[]>([])
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.3.27.11-AAE2')
+  const version = ref('2026.4.10.1-0B1D')
 
   function handleMessage(message: string) {
     try {
@@ -163,6 +165,9 @@ export const useAppStore = defineStore('app', () => {
     relayEvents
   }
 })
+
+
+
 
 
 

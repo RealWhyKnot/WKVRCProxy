@@ -64,9 +64,9 @@ public class CurlImpersonateClient : IProxyModule
         // Pipe stderr to logger asynchronously
         _ = Task.Run(async () => {
             using var reader = process.StandardError;
-            while (!reader.EndOfStream)
+            string? line;
+            while ((line = await reader.ReadLineAsync()) != null)
             {
-                string? line = await reader.ReadLineAsync();
                 if (!string.IsNullOrEmpty(line))
                 {
                     _logger?.Trace("[CURL-WARN] " + line);

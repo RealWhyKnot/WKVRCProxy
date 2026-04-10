@@ -33,7 +33,7 @@ const tabs = [
     <nav class="flex-grow space-y-1">
       <button v-for="tab in tabs" :key="tab.id" @click="appStore.activeTab = tab.id" 
               class="w-full flex items-center gap-3.5 px-5 py-3 rounded-2xl transition-all duration-500 group relative overflow-hidden"
-              :class="appStore.activeTab === tab.id ? 'text-white' : 'text-white/30 hover:text-white/60'">
+              :class="appStore.activeTab === tab.id ? 'text-white' : 'text-white/50 hover:text-white/70'">
         
         <!-- Active Background -->
         <div v-if="appStore.activeTab === tab.id" class="absolute inset-0 bg-white/5 border border-white/10 rounded-2xl shadow-xl"></div>

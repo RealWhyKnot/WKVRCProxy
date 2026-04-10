@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using WKVRCProxy.Core.IPC;
 using WKVRCProxy.Core.Logging;
@@ -39,7 +40,7 @@ public class ResolutionEngine
         _relayPortManager = relayPortManager;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(_settings.Config.UserAgent);
-        
+
         // Initialize counts from history
         foreach (var entry in _settings.Config.History)
         {
@@ -56,6 +57,23 @@ public class ResolutionEngine
             node = _tier2Client.ActiveNode,
             player = _monitor.CurrentPlayer
         });
+    }
+
+    // Quick HEAD request to verify a resolved URL is actually reachable before accepting it.
+    // A 3-second timeout is used to not delay resolution significantly.
+    private async Task<bool> CheckUrlReachable(string url)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            using var req = new HttpRequestMessage(HttpMethod.Head, url);
+            var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            return (int)resp.StatusCode < 400;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public async Task<string?> ResolveAsync(ResolvePayload payload)
@@ -75,24 +93,50 @@ public class ResolutionEngine
 
         _logger.Info("Starting resolution for: " + targetUrl + " [" + player + "]");
         UpdateStatus("Intercepted " + player + " request...");
-        
+
         string? result = null;
         string activeTier = _settings.Config.PreferredTier;
 
-        try 
+        try
         {
-            if (activeTier == "tier1") 
+            if (activeTier == "tier1")
             {
                 result = await ResolveTier1(targetUrl, player);
+                if (result != null && !await CheckUrlReachable(result))
+                {
+                    _logger.Warning("Tier 1 URL failed reachability check. Falling back to Tier 2.");
+                    result = null;
+                }
                 if (result == null) {
                     _logger.Warning("Tier 1 failed. Falling back to Tier 2.");
                     result = await ResolveTier2(targetUrl, player);
                     activeTier = "tier2";
+                    if (result != null && !await CheckUrlReachable(result))
+                    {
+                        _logger.Warning("Tier 2 URL failed reachability check. Falling back to Tier 3.");
+                        result = null;
+                    }
+                    if (result == null) {
+                        _logger.Warning("Tier 2 failed. Falling back to Tier 3.");
+                        result = await ResolveTier3(targetUrl, payload.Args);
+                        activeTier = "tier3";
+                    }
                 }
             }
             else if (activeTier == "tier2")
             {
                 result = await ResolveTier2(targetUrl, player);
+                if (result != null && !await CheckUrlReachable(result))
+                {
+                    _logger.Warning("Tier 2 URL failed reachability check. Falling back to Tier 3.");
+                    result = null;
+                }
+                if (result == null)
+                {
+                    _logger.Warning("Tier 2 failed. Falling back to Tier 3.");
+                    result = await ResolveTier3(targetUrl, payload.Args);
+                    activeTier = "tier3";
+                }
             }
             else if (activeTier == "tier3")
             {
@@ -117,6 +161,13 @@ public class ResolutionEngine
             result = targetUrl;
             activeTier = "tier4-error";
         }
+
+        // Detect HLS / live stream from resolved URL before relay wrapping
+        bool isLive = result != null && (result.Contains(".m3u8") || result.Contains("m3u8"));
+        string streamType = isLive ? "live" : (!string.IsNullOrEmpty(result) && result != "FAILED" ? "vod" : "unknown");
+
+        if (isLive)
+            _logger.Info("Detected HLS/live stream. Stream type: " + streamType);
 
         if (_settings.Config.EnableRelayBypass && _hostsManager.IsBypassActive() && !string.IsNullOrEmpty(result) && result != "FAILED")
         {
@@ -146,37 +197,41 @@ public class ResolutionEngine
             ResolvedUrl = result ?? "FAILED",
             Tier = activeTier,
             Player = player,
-            Success = !string.IsNullOrEmpty(result)
+            Success = !string.IsNullOrEmpty(result),
+            IsLive = isLive,
+            StreamType = streamType
         };
-        
+
         _settings.Config.History.Insert(0, entry);
         if (_settings.Config.History.Count > 100) _settings.Config.History.RemoveAt(100);
         _settings.Save();
 
         _activeResolutions--;
         UpdateStatus("Resolution completed via " + activeTier.ToUpper());
-        _logger.Success("Final Resolution [" + activeTier + "]: " + (result != null && result.Length > 100 ? result.Substring(0, 100) + "..." : result));
+        _logger.Success("Final Resolution [" + activeTier + "] [" + streamType + "]: " + (result != null && result.Length > 100 ? result.Substring(0, 100) + "..." : result));
         return result;
     }
 
     private async Task<string?> ResolveTier1(string url, string player)
     {
         _logger.Debug("[Tier 1] Attempting native yt-dlp resolution...");
-        
+
         var args = new List<string> { "--get-url", "--no-warnings" };
         if (_settings.Config.ForceIPv4) args.Add("--force-ipv4");
 
         if (player == "AVPro")
         {
+            // AVPro supports HLS, DASH, and MP4. Prefer HLS first (works for both live and VOD).
             args.Add("-f");
             args.Add("best[protocol^=m3u8_native]/best[protocol^=http_dash_segments]/best[ext=mp4]/best");
         }
         else
         {
+            // Unity player: prefer MP4 for VODs (better seeking), fall back to HLS for live streams,
+            // and explicitly avoid raw DASH which Unity cannot decode.
             args.Add("-f");
             string res = _settings.Config.PreferredResolution.Replace("p", "");
-            // MANDATORY: Interleaved formats ONLY for Unity to avoid player failure
-            args.Add("best[ext=mp4][height<=" + res + "]/best[ext=mp4]/best");
+            args.Add("best[ext=mp4][height<=" + res + "]/best[ext=mp4]/best[protocol^=m3u8_native]/best[protocol!=http_dash_segments]/best");
         }
 
         args.Add(url);
@@ -224,12 +279,21 @@ public class ResolutionEngine
             process.StartInfo.RedirectStandardError = true;
             process.StartInfo.CreateNoWindow = true;
 
+            // Enable events so the Exited handler fires immediately when the process ends.
+            // Without this, a failed yt-dlp (no URL on stdout) would hold the caller
+            // until the full 15-second timeout fires.
+            process.EnableRaisingEvents = true;
+
             process.OutputDataReceived += (s, e) => {
                 if (!string.IsNullOrWhiteSpace(e.Data) && e.Data.StartsWith("http"))
                 {
-                    if (!tcs.Task.IsCompleted) tcs.SetResult(e.Data.Trim());
+                    tcs.TrySetResult(e.Data.Trim());
                 }
             };
+
+            // When the process exits without printing a URL, complete the TCS with null immediately
+            // so the caller does not wait for the full timeout.
+            process.Exited += (s, e) => { tcs.TrySetResult(null); };
 
             process.Start();
             process.BeginOutputReadLine();
@@ -237,7 +301,7 @@ public class ResolutionEngine
 
             var timeoutTask = Task.Delay(15000);
             var completed = await Task.WhenAny(tcs.Task, timeoutTask);
-            
+
             if (completed == timeoutTask)
             {
                 _logger.Warning(binary + " timed out.");

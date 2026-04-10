@@ -12,6 +12,11 @@ public class HistoryEntry
     public string Tier { get; set; } = string.Empty;
     public string Player { get; set; } = string.Empty;
     public bool Success { get; set; }
+
+    // No [JsonPropertyName] — C# default serialization outputs PascalCase matching the TypeScript HistoryEntry interface.
+    public bool IsLive { get; set; }
+
+    public string StreamType { get; set; } = "unknown";
 }
 
 public class AppConfig
