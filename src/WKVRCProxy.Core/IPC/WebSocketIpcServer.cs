@@ -69,7 +69,7 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
                 _logger?.Debug("IPC port exported: " + path);
             }
         } catch (Exception ex) {
-            _logger?.Trace("Port export warning: " + ex.Message);
+            _logger?.Warning("Failed to export IPC port file — Redirector may not connect: " + ex.Message, ex);
         }
     }
 
@@ -86,6 +86,7 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
                 }
                 else
                 {
+                    _logger?.Debug("Rejected non-WebSocket request from: " + context.Request.RemoteEndPoint);
                     context.Response.StatusCode = 400;
                     context.Response.Close();
                 }
@@ -125,26 +126,34 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
             }
 
             var payload = JsonSerializer.Deserialize(json, CoreJsonContext.Default.ResolvePayload);
-            
+
             if (payload != null && OnResolveRequested != null)
             {
+                _logger?.Trace("Payload deserialized, invoking resolution handler.");
                 string? resolved = await OnResolveRequested.Invoke(payload);
                 string response = string.IsNullOrEmpty(resolved) ? "" : Convert.ToBase64String(Encoding.UTF8.GetBytes(resolved));
-                
+
                 var responseBytes = Encoding.UTF8.GetBytes(response);
                 await webSocket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, _cts.Token);
+            }
+            else
+            {
+                _logger?.Warning("WebSocket request had null payload or no resolution handler registered — sending empty response.");
+                var emptyBytes = Encoding.UTF8.GetBytes("");
+                await webSocket.SendAsync(new ArraySegment<byte>(emptyBytes), WebSocketMessageType.Text, true, _cts.Token);
             }
 
             if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
             {
                 using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                try { await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", closeCts.Token); } catch { }
+                try { await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", closeCts.Token); }
+                catch (Exception ex) { _logger?.Trace("WebSocket close handshake failed (expected on abrupt disconnect): " + ex.Message); }
             }
         }
         catch (Exception ex)
         {
             if (!(ex is WebSocketException || ex is OperationCanceledException))
-                _logger?.Error("WebSocket Session Error: " + ex.Message);
+                _logger?.Error("WebSocket Session Error: " + ex.Message, ex);
         }
         finally
         {

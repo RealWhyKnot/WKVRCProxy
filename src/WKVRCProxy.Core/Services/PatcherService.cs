@@ -84,11 +84,13 @@ public class PatcherService : IProxyModule, IDisposable
             Shutdown();
             foreach (var f in Directory.GetFiles(_vrcToolsDir))
             {
-                try { File.Delete(f); } catch { }
+                try { File.Delete(f); }
+                catch (Exception ex) { _logger?.Trace("Failed to delete file during wipe (" + Path.GetFileName(f) + "): " + ex.Message); }
             }
             foreach (var d in Directory.GetDirectories(_vrcToolsDir))
             {
-                try { Directory.Delete(d, true); } catch { }
+                try { Directory.Delete(d, true); }
+                catch (Exception ex) { _logger?.Trace("Failed to delete directory during wipe (" + Path.GetFileName(d) + "): " + ex.Message); }
             }
             _logger?.Success("Tools folder wiped.");
         }
@@ -122,7 +124,7 @@ public class PatcherService : IProxyModule, IDisposable
                 junk.Add(d);
             }
         }
-        catch { }
+        catch (Exception ex) { _logger?.Warning("Failed to enumerate junk items in Tools folder: " + ex.Message); }
         return junk;
     }
 
@@ -156,7 +158,7 @@ public class PatcherService : IProxyModule, IDisposable
                     await EnsurePatchApplied();
                 }
             }
-            catch { }
+            catch (Exception ex) { _logger?.Warning("Patch monitor error: " + ex.Message, ex); }
             await Task.Delay(3000, _cts.Token);
         }
     }
@@ -172,7 +174,7 @@ public class PatcherService : IProxyModule, IDisposable
                 File.Copy(_wrapperPath!, targetPath, true);
                 _lastPatchTime = DateTime.Now;
                 _logger?.Success("Patch applied (yt-dlp.exe created).");
-            } catch { }
+            } catch (Exception ex) { _logger?.Error("Failed to apply patch (copy yt-dlp.exe): " + ex.Message, ex); }
             return;
         }
 
@@ -183,7 +185,7 @@ public class PatcherService : IProxyModule, IDisposable
                 File.Copy(_wrapperPath!, targetPath, true);
                 _lastPatchTime = DateTime.Now;
                 _logger?.Info("Patch initialized (Backup created).");
-            } catch { }
+            } catch (Exception ex) { _logger?.Error("Failed to initialize patch (backup/copy): " + ex.Message, ex); }
             return;
         }
 
@@ -194,9 +196,9 @@ public class PatcherService : IProxyModule, IDisposable
         {
             File.Copy(_wrapperPath!, targetPath, true);
             _lastPatchTime = DateTime.Now;
-            _logger?.Warning("Patch integrity restored.");
+            _logger?.Warning("Patch integrity restored (yt-dlp.exe was modified or replaced).");
         }
-        catch { }
+        catch (Exception ex) { _logger?.Error("Failed to restore patch integrity: " + ex.Message, ex); }
     }
 
     private bool IsFileSame(string path1, string path2)
@@ -231,17 +233,20 @@ public class PatcherService : IProxyModule, IDisposable
             _logger?.Trace("Performing deep process cleanup...");
             foreach (var proc in Process.GetProcessesByName("curl-impersonate-win"))
             {
-                try { proc.Kill(); } catch { }
+                try { proc.Kill(); }
+                catch (Exception ex) { _logger?.Trace("Failed to kill curl-impersonate-win (PID " + proc.Id + "): " + ex.Message); }
             }
             foreach (var proc in Process.GetProcessesByName("bgutil-ytdlp-pot-provider"))
             {
-                try { proc.Kill(); } catch { }
+                try { proc.Kill(); }
+                catch (Exception ex) { _logger?.Trace("Failed to kill bgutil-ytdlp-pot-provider (PID " + proc.Id + "): " + ex.Message); }
             }
-            
+
             string relayPortFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "relay_port.dat");
             if (File.Exists(relayPortFile))
             {
-                try { File.Delete(relayPortFile); } catch { }
+                try { File.Delete(relayPortFile); }
+                catch (Exception ex) { _logger?.Trace("Failed to delete relay_port.dat: " + ex.Message); }
             }
             
         }

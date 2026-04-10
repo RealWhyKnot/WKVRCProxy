@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -76,9 +77,20 @@ public class ResolutionEngine
         }
     }
 
+    // Runs a tier resolver and measures how long it takes.
+    private static async Task<(string? Url, long ElapsedMs)> TimedResolve(Func<Task<string?>> resolver)
+    {
+        var sw = Stopwatch.StartNew();
+        string? result = await resolver();
+        sw.Stop();
+        return (result, sw.ElapsedMilliseconds);
+    }
+
     public async Task<string?> ResolveAsync(ResolvePayload payload)
     {
         _activeResolutions++;
+        var resolutionSw = Stopwatch.StartNew();
+
         string? targetUrl = payload.Args.FirstOrDefault(a => a.StartsWith("http"));
         if (string.IsNullOrEmpty(targetUrl))
         {
@@ -101,7 +113,9 @@ public class ResolutionEngine
         {
             if (activeTier == "tier1")
             {
-                result = await ResolveTier1(targetUrl, player);
+                var (t1Url, t1Ms) = await TimedResolve(() => ResolveTier1(targetUrl, player));
+                result = t1Url;
+                _logger.Debug($"[Tier 1] resolved in {t1Ms}ms");
                 if (result != null && !await CheckUrlReachable(result))
                 {
                     _logger.Warning("Tier 1 URL failed reachability check. Falling back to Tier 2.");
@@ -109,8 +123,10 @@ public class ResolutionEngine
                 }
                 if (result == null) {
                     _logger.Warning("Tier 1 failed. Falling back to Tier 2.");
-                    result = await ResolveTier2(targetUrl, player);
+                    var (t2Url, t2Ms) = await TimedResolve(() => ResolveTier2(targetUrl, player));
+                    result = t2Url;
                     activeTier = "tier2";
+                    _logger.Debug($"[Tier 2] resolved in {t2Ms}ms");
                     if (result != null && !await CheckUrlReachable(result))
                     {
                         _logger.Warning("Tier 2 URL failed reachability check. Falling back to Tier 3.");
@@ -118,14 +134,18 @@ public class ResolutionEngine
                     }
                     if (result == null) {
                         _logger.Warning("Tier 2 failed. Falling back to Tier 3.");
-                        result = await ResolveTier3(targetUrl, payload.Args);
+                        var (t3Url, t3Ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args));
+                        result = t3Url;
                         activeTier = "tier3";
+                        _logger.Debug($"[Tier 3] resolved in {t3Ms}ms");
                     }
                 }
             }
             else if (activeTier == "tier2")
             {
-                result = await ResolveTier2(targetUrl, player);
+                var (t2Url, t2Ms) = await TimedResolve(() => ResolveTier2(targetUrl, player));
+                result = t2Url;
+                _logger.Debug($"[Tier 2] resolved in {t2Ms}ms");
                 if (result != null && !await CheckUrlReachable(result))
                 {
                     _logger.Warning("Tier 2 URL failed reachability check. Falling back to Tier 3.");
@@ -134,13 +154,17 @@ public class ResolutionEngine
                 if (result == null)
                 {
                     _logger.Warning("Tier 2 failed. Falling back to Tier 3.");
-                    result = await ResolveTier3(targetUrl, payload.Args);
+                    var (t3Url, t3Ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args));
+                    result = t3Url;
                     activeTier = "tier3";
+                    _logger.Debug($"[Tier 3] resolved in {t3Ms}ms");
                 }
             }
             else if (activeTier == "tier3")
             {
-                result = await ResolveTier3(targetUrl, payload.Args);
+                var (t3Url, t3Ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args));
+                result = t3Url;
+                _logger.Debug($"[Tier 3] resolved in {t3Ms}ms");
             }
             else if (activeTier == "tier4")
             {
@@ -157,7 +181,7 @@ public class ResolutionEngine
         }
         catch (Exception ex)
         {
-            _logger.Error("Resolution loop fatal error: " + ex.Message);
+            _logger.Error("Resolution loop fatal error: " + ex.Message, ex);
             result = targetUrl;
             activeTier = "tier4-error";
         }
@@ -206,9 +230,10 @@ public class ResolutionEngine
         if (_settings.Config.History.Count > 100) _settings.Config.History.RemoveAt(100);
         _settings.Save();
 
+        resolutionSw.Stop();
         _activeResolutions--;
         UpdateStatus("Resolution completed via " + activeTier.ToUpper());
-        _logger.Success("Final Resolution [" + activeTier + "] [" + streamType + "]: " + (result != null && result.Length > 100 ? result.Substring(0, 100) + "..." : result));
+        _logger.Success($"Final Resolution [{activeTier}] [{streamType}] in {resolutionSw.ElapsedMilliseconds}ms: " + (result != null && result.Length > 100 ? result.Substring(0, 100) + "..." : result));
         return result;
     }
 
@@ -291,6 +316,13 @@ public class ResolutionEngine
                 }
             };
 
+            // Capture stderr so errors from yt-dlp are visible in the log instead of silently discarded.
+            var stderrLines = new StringBuilder();
+            process.ErrorDataReceived += (s, e) => {
+                if (!string.IsNullOrWhiteSpace(e.Data))
+                    stderrLines.AppendLine(e.Data.Trim());
+            };
+
             // When the process exits without printing a URL, complete the TCS with null immediately
             // so the caller does not wait for the full timeout.
             process.Exited += (s, e) => { tcs.TrySetResult(null); };
@@ -301,6 +333,11 @@ public class ResolutionEngine
 
             var timeoutTask = Task.Delay(15000);
             var completed = await Task.WhenAny(tcs.Task, timeoutTask);
+
+            // Log any stderr output regardless of whether it timed out or resolved
+            string stderrOutput = stderrLines.ToString().Trim();
+            if (!string.IsNullOrEmpty(stderrOutput))
+                _logger.Warning($"[{binary}] stderr: " + stderrOutput);
 
             if (completed == timeoutTask)
             {

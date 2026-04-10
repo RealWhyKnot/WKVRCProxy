@@ -141,14 +141,15 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             string toolsDir = Path.Combine(root, "VRChat_Data", "StreamingAssets", "Tools");
             if (Directory.Exists(toolsDir)) return toolsDir;
         }
-        catch { }
+        catch (Exception ex) { _logger?.Trace("Failed to detect Tools dir from exe path: " + ex.Message); }
         return null;
     }
     
     public void Dispose()
     {
         _cts.Cancel();
-        try { _monitorTask?.Wait(1000); } catch { }
+        try { _monitorTask?.Wait(1000); }
+        catch (Exception ex) { _logger?.Trace("MonitorLoop did not exit cleanly on dispose: " + ex.Message); }
         _cts.Dispose();
     }
 }

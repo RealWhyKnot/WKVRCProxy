@@ -58,6 +58,7 @@ class Program
     {
         _settings = new SettingsManager(baseDir);
         _logger = new Logger(baseDir, "System", _settings);
+        _settings.SetLogger(_logger); // inject after construction — breaks circular dep
         
         _coordinator = new ModuleCoordinator(_logger, _settings);
         
@@ -93,7 +94,9 @@ class Program
                     _window?.Invoke(() => {
                         _window?.SendWebMessage(JsonSerializer.Serialize(new { type = type, data = data }));
                     });
-                } catch { }
+                } catch (Exception ex) {
+                    _logger?.Warning("IPC send to UI failed: " + ex.Message, ex);
+                }
             }
             else {
                 // Background delay and retry if window not ready
@@ -112,7 +115,9 @@ class Program
                     _window?.Invoke(() => {
                         _window?.SendWebMessage(JsonSerializer.Serialize(new { type = "RELAY_EVENT", data = relayEvent }));
                     });
-                } catch { }
+                } catch (Exception ex) {
+                    _logger?.Warning("RelayEvent send to UI failed: " + ex.Message, ex);
+                }
             }
         };
 
@@ -161,7 +166,9 @@ class Program
                         string wrapperPath = Path.Combine(baseDir, "tools", "redirector.exe");
                         if (File.Exists(wrapperPath)) patcherService.StartMonitoring(wrapperPath);
                     }
-                } catch { }
+                } catch (Exception ex) {
+                    _logger?.Fatal("Coordinator initialization failed: " + ex.Message, ex);
+                }
             });
         });
 
@@ -182,7 +189,9 @@ class Program
         try {
             var patcher = _coordinator?.GetModule<PatcherService>();
             patcher?.Shutdown();
-        } catch { }
+        } catch (Exception ex) {
+            _logger?.Warning("Shutdown error: " + ex.Message, ex);
+        }
         _coordinator?.Dispose();
         _logger?.Dispose();
     }
@@ -283,6 +292,8 @@ class Program
                     });
                     break;
             }
-        } catch { }
+        } catch (Exception ex) {
+            _logger?.Warning("WebMessage parse error: " + ex.Message, ex);
+        }
     }
 }

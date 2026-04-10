@@ -19,6 +19,8 @@ class Program
         
         try
         {
+            File.AppendAllText(logPath, "[" + DateTime.Now.ToString("s") + "] Invoked with args: " + string.Join(" | ", args) + "\n");
+
             // First look for local link file (portable mode)
             string portFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ipc_port.dat");
             
@@ -54,8 +56,9 @@ class Program
 
             using var ws = new ClientWebSocket();
             var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            
+
             await ws.ConnectAsync(new Uri("ws://127.0.0.1:" + port + "/"), cts.Token);
+            File.AppendAllText(logPath, "[" + DateTime.Now.ToString("s") + "] Connected to IPC on port " + port + "\n");
 
             var sendBytes = Encoding.UTF8.GetBytes(json);
             await ws.SendAsync(new ArraySegment<byte>(sendBytes), WebSocketMessageType.Text, true, cts.Token);
@@ -74,10 +77,11 @@ class Program
             if (!string.IsNullOrEmpty(responseBase64))
             {
                 string finalUrl = Encoding.UTF8.GetString(Convert.FromBase64String(responseBase64));
+                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("s") + "] Resolved: " + finalUrl.Substring(0, Math.Min(100, finalUrl.Length)) + "\n");
                 WriteToStdout(finalUrl);
                 return 0;
             }
-            
+
             throw new Exception("Core returned no data.");
         }
         catch (Exception ex)

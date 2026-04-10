@@ -76,7 +76,11 @@ public class PotProviderService : IProxyModule, IDisposable
             _tokenCache.TryRemove(videoId, out _);
         }
 
-        if (_port == 0) return null;
+        if (_port == 0)
+        {
+            _logger?.Warning("PO Token provider not initialized (port=0). Token fetch skipped.");
+            return null;
+        }
 
         try
         {
@@ -116,8 +120,10 @@ public class PotProviderService : IProxyModule, IDisposable
     {
         if (_providerProcess != null && !_providerProcess.HasExited)
         {
-            try { _providerProcess.Kill(true); } catch { }
-            try { _providerProcess.Dispose(); } catch { }
+            try { _providerProcess.Kill(true); }
+            catch (Exception ex) { _logger?.Trace("Failed to kill bgutil-ytdlp-pot-provider: " + ex.Message); }
+            try { _providerProcess.Dispose(); }
+            catch (Exception ex) { _logger?.Trace("Failed to dispose provider process: " + ex.Message); }
         }
     }
 

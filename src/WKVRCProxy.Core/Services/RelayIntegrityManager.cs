@@ -42,9 +42,10 @@ public class RelayIntegrityManager : IProxyModule, IDisposable
                     _logger?.Error("DNS Bypass broken. Public worlds will fail. Please fix your hosts file.");
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // DNS lookup failed entirely, might happen if offline, ignore for now
+                // DNS lookup failed — expected when offline or DNS is unreachable; trace only to avoid noise
+                _logger?.Trace("DNS integrity check failed (may be offline): " + ex.Message);
             }
             
             await Task.Delay(30000, _cts.Token);

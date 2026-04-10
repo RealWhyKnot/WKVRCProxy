@@ -52,7 +52,7 @@ public class ModuleCoordinator : IModuleContext, IDisposable
                 await m.InitializeAsync(this);
                 Logger.Success(m.Name + " ready.");
             } catch (Exception ex) {
-                Logger.Fatal(m.Name + " Failed to Init: " + ex.Message);
+                Logger.Fatal(m.Name + " Failed to Init: " + ex.Message, ex);
             }
         }
         Logger.Info("Subsystems Initialized.");
@@ -63,7 +63,8 @@ public class ModuleCoordinator : IModuleContext, IDisposable
         Logger.Info("Shutting down subsystems...");
         foreach (var m in _modules)
         {
-            try { m.Shutdown(); } catch { }
+            try { m.Shutdown(); }
+            catch (Exception ex) { Logger.Trace(m.Name + " shutdown error: " + ex.Message, ex); }
         }
     }
 

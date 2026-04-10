@@ -57,14 +57,31 @@ if ($Versions.deno -ne $LatestDenoVersion) {
     Remove-Item $ZipPath
     $Versions.deno = $LatestDenoVersion
 }
-# 3. curl-impersonate-win (optional - no upstream Windows binaries exist)
-# If a curl-impersonate-win.exe is manually placed in vendor/, it will be packaged.
-# The relay server gracefully falls back to standard HttpClient when this is absent.
+# 3. Fetch Latest curl-impersonate-win (RealWhyKnot/curl-impersonate-win)
+# Go-based Windows CLI wrapper around bogdanfinn/tls-client for Chrome TLS fingerprint impersonation.
 $CurlImpVendorPath = Join-Path $VendorDir "curl-impersonate-win.exe"
-if (Test-Path $CurlImpVendorPath) {
-    Write-Host "Found vendor curl-impersonate-win.exe - will be packaged." -ForegroundColor Green
-} else {
-    Write-Host "Note: curl-impersonate-win.exe not in vendor/. Relay will use standard HttpClient for TLS-sensitive domains." -ForegroundColor Yellow
+try {
+    $CurlImpRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/RealWhyKnot/curl-impersonate-win/releases/latest" -ErrorAction Stop
+    $LatestCurlImpVersion = $CurlImpRelease.tag_name
+    if ($Versions.curlimp -ne $LatestCurlImpVersion -or !(Test-Path $CurlImpVendorPath)) {
+        Write-Host "Updating curl-impersonate-win to $LatestCurlImpVersion..." -ForegroundColor Yellow
+        $CurlImpAsset = ($CurlImpRelease.assets | Where-Object { $_.name -eq "curl-impersonate-win.exe" } | Select-Object -First 1)
+        if ($CurlImpAsset) {
+            Invoke-WebRequest -Uri $CurlImpAsset.browser_download_url -OutFile $CurlImpVendorPath
+            $Versions.curlimp = $LatestCurlImpVersion
+            Write-Host "curl-impersonate-win.exe ready ($LatestCurlImpVersion)." -ForegroundColor Green
+        } else {
+            Write-Host "Warning: curl-impersonate-win.exe asset not found in release. Relay will use standard HttpClient." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "curl-impersonate-win.exe is up-to-date ($LatestCurlImpVersion)." -ForegroundColor Green
+    }
+} catch {
+    if (Test-Path $CurlImpVendorPath) {
+        Write-Host "curl-impersonate-win.exe found in vendor/ (offline - could not check for updates)." -ForegroundColor Green
+    } else {
+        Write-Host "Note: Could not fetch curl-impersonate-win release. Relay will use standard HttpClient." -ForegroundColor Yellow
+    }
 }
 
 # 4. Fetch and Compile bgutil-ytdlp-pot-provider implementation

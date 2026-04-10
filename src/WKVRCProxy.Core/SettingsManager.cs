@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using WKVRCProxy.Core.Logging;
 using WKVRCProxy.Core.Models;
 
 namespace WKVRCProxy.Core;
@@ -11,12 +12,21 @@ public class SettingsManager
     private AppConfig _config;
     private readonly object _lock = new object();
 
+    // Injected after construction to avoid circular dependency (Logger depends on SettingsManager).
+    // Call SetLogger() once the Logger is created.
+    private Logger? _logger;
+
     public AppConfig Config => _config;
 
     public SettingsManager(string baseDir)
     {
         _filePath = Path.Combine(baseDir, "app_config.json");
         _config = Load();
+    }
+
+    public void SetLogger(Logger logger)
+    {
+        _logger = logger;
     }
 
     private AppConfig Load()
@@ -38,8 +48,15 @@ public class SettingsManager
                 var config = JsonSerializer.Deserialize(json, CoreJsonContext.Default.AppConfig);
                 return config ?? new AppConfig();
             }
-            catch
+            catch (Exception ex)
             {
+                // Logger not yet available at construction time — write directly to a fallback file
+                try
+                {
+                    string errFile = Path.Combine(Path.GetDirectoryName(_filePath)!, "settings_load_error.log");
+                    File.WriteAllText(errFile, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Failed to load app_config.json: {ex}\n");
+                }
+                catch { }
                 return new AppConfig();
             }
         }
@@ -53,8 +70,12 @@ public class SettingsManager
             {
                 string json = JsonSerializer.Serialize(_config, CoreJsonContext.Default.AppConfig);
                 File.WriteAllText(_filePath, json);
+                _logger?.Trace("Settings saved.");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger?.Error("Failed to save settings: " + ex.Message, ex);
+            }
         }
     }
 }

@@ -66,15 +66,19 @@ public class CodecInstaller : IProxyModule
             using var process = Process.Start(psi);
             if (process != null)
             {
-                process.WaitForExit(60000); 
+                process.WaitForExit(60000);
                 if (process.ExitCode == 0)
                 {
                     _logger?.Success(name + " installed successfully.");
                 }
                 else
                 {
-                    _logger?.Warning(name + " installation returned code: " + process.ExitCode);
+                    _logger?.Warning(name + " installation returned exit code: " + process.ExitCode);
                 }
+            }
+            else
+            {
+                _logger?.Warning("Failed to start winget process for: " + name);
             }
         }
         catch (Exception ex)
@@ -141,6 +145,10 @@ public class CodecInstaller : IProxyModule
 
             return false;
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            _logger?.Warning("Error checking codec installation status for " + packageFamilyName + ": " + ex.Message);
+            return false;
+        }
     }
 }

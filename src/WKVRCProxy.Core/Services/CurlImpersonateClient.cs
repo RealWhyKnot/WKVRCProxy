@@ -61,16 +61,23 @@ public class CurlImpersonateClient : IProxyModule
         var process = Process.Start(psi);
         if (process == null) throw new Exception("Failed to start curl-impersonate-win process.");
 
-        // Pipe stderr to logger asynchronously
+        _logger?.Trace("Spawned curl-impersonate process for: " + method + " " + url.Substring(0, Math.Min(80, url.Length)));
+
+        // Pipe stderr to logger asynchronously — wrapped in try/catch so I/O errors don't get silently dropped
         _ = Task.Run(async () => {
-            using var reader = process.StandardError;
-            string? line;
-            while ((line = await reader.ReadLineAsync()) != null)
+            try
             {
-                if (!string.IsNullOrEmpty(line))
+                using var reader = process.StandardError;
+                string? line;
+                while ((line = await reader.ReadLineAsync()) != null)
                 {
-                    _logger?.Trace("[CURL-WARN] " + line);
+                    if (!string.IsNullOrEmpty(line))
+                        _logger?.Trace("[CURL-WARN] " + line);
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warning("curl-impersonate stderr reader error: " + ex.Message);
             }
         });
 

@@ -86,7 +86,7 @@ public class RelayServer : IProxyModule, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.Error("RelayServer Init Error: " + ex.Message);
+            _logger.Error("RelayServer Init Error: " + ex.Message, ex);
         }
 
         return Task.CompletedTask;
@@ -106,7 +106,7 @@ public class RelayServer : IProxyModule, IDisposable
             catch (HttpListenerException) { /* Ignored on closing */ }
             catch (Exception ex)
             {
-                _logger?.Error("Relay Listen Loop Error: " + ex.Message);
+                _logger?.Error("Relay Listen Loop Error: " + ex.Message, ex);
             }
         }
     }
@@ -355,9 +355,8 @@ public class RelayServer : IProxyModule, IDisposable
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
                     try { context.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
-                    relayEvent.StatusCode = context.Response.StatusCode;
-                    OnRelayEvent?.Invoke(relayEvent);
                     await context.Response.OutputStream.WriteAsync(manifestBytes, 0, manifestBytes.Length, _cts.Token);
+                    relayEvent.StatusCode = context.Response.StatusCode;
                     relayEvent.BytesTransferred = manifestBytes.Length;
                     OnRelayEvent?.Invoke(relayEvent);
                     return;
@@ -403,9 +402,8 @@ public class RelayServer : IProxyModule, IDisposable
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
                     try { context.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
-                    relayEvent.StatusCode = context.Response.StatusCode;
-                    OnRelayEvent?.Invoke(relayEvent);
                     await context.Response.OutputStream.WriteAsync(manifestBytes, 0, manifestBytes.Length, _cts.Token);
+                    relayEvent.StatusCode = context.Response.StatusCode;
                     relayEvent.BytesTransferred = manifestBytes.Length;
                     OnRelayEvent?.Invoke(relayEvent);
                     return;
@@ -414,10 +412,7 @@ public class RelayServer : IProxyModule, IDisposable
                 sourceStream = await response.Content.ReadAsStreamAsync();
             }
 
-            relayEvent.StatusCode = context.Response.StatusCode;
-            OnRelayEvent?.Invoke(relayEvent);
-
-            // Non-HLS binary streaming path
+            // Non-HLS binary streaming path: fire one final event with status + bytes once done.
             try
             {
                 byte[] buffer = new byte[81920];
@@ -433,11 +428,12 @@ public class RelayServer : IProxyModule, IDisposable
             catch (TaskCanceledException) { /* System shutting down */ }
             catch (OperationCanceledException) { /* System shutting down */ }
 
+            relayEvent.StatusCode = context.Response.StatusCode;
             OnRelayEvent?.Invoke(relayEvent);
         }
         catch (Exception ex)
         {
-            _logger?.Error("Relay Request Handling Error: " + ex.Message);
+            _logger?.Error("Relay Request Handling Error: " + ex.Message, ex);
             try { context.Response.StatusCode = 500; } catch { }
         }
         finally

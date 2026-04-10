@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 export interface RelayEvent {
   id: string;
@@ -54,6 +54,16 @@ export interface AppStatus {
 export const useAppStore = defineStore('app', () => {
   const activeTab = ref('dashboard')
   const logs = ref<LogEntry[]>([])
+  const logLevelFilter = ref<number | null>(null) // null = show all levels
+  const logSourceFilter = ref<string>('')          // '' = show all sources
+
+  const filteredLogs = computed(() => {
+    return logs.value.filter(entry => {
+      if (logLevelFilter.value !== null && entry.Level !== logLevelFilter.value) return false
+      if (logSourceFilter.value && !entry.Source.toLowerCase().includes(logSourceFilter.value.toLowerCase())) return false
+      return true
+    })
+  })
   
   const status = ref<AppStatus>({
     message: 'Ready',
@@ -81,7 +91,7 @@ export const useAppStore = defineStore('app', () => {
   const relayEvents = ref<RelayEvent[]>([])
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.10.1-0B1D')
+  const version = ref('2026.4.10.4-94B7')
 
   function handleMessage(message: string) {
     try {
@@ -151,6 +161,9 @@ export const useAppStore = defineStore('app', () => {
   return {
     activeTab,
     logs,
+    filteredLogs,
+    logLevelFilter,
+    logSourceFilter,
     config,
     status,
     isBridgeReady,
@@ -165,6 +178,9 @@ export const useAppStore = defineStore('app', () => {
     relayEvents
   }
 })
+
+
+
 
 
 
