@@ -108,75 +108,55 @@ public class ResolutionEngine
 
         string? result = null;
         string activeTier = _settings.Config.PreferredTier;
+        var disabled = _settings.Config.DisabledTiers ?? new List<string>();
 
         try
         {
-            if (activeTier == "tier1")
-            {
-                var (t1Url, t1Ms) = await TimedResolve(() => ResolveTier1(targetUrl, player));
-                result = t1Url;
-                _logger.Debug($"[Tier 1] resolved in {t1Ms}ms");
-                if (result != null && !await CheckUrlReachable(result))
-                {
-                    _logger.Warning("Tier 1 URL failed reachability check. Falling back to Tier 2.");
-                    result = null;
-                }
-                if (result == null) {
-                    _logger.Warning("Tier 1 failed. Falling back to Tier 2.");
-                    var (t2Url, t2Ms) = await TimedResolve(() => ResolveTier2(targetUrl, player));
-                    result = t2Url;
-                    activeTier = "tier2";
-                    _logger.Debug($"[Tier 2] resolved in {t2Ms}ms");
-                    if (result != null && !await CheckUrlReachable(result))
-                    {
-                        _logger.Warning("Tier 2 URL failed reachability check. Falling back to Tier 3.");
-                        result = null;
-                    }
-                    if (result == null) {
-                        _logger.Warning("Tier 2 failed. Falling back to Tier 3.");
-                        var (t3Url, t3Ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args));
-                        result = t3Url;
-                        activeTier = "tier3";
-                        _logger.Debug($"[Tier 3] resolved in {t3Ms}ms");
-                    }
-                }
-            }
-            else if (activeTier == "tier2")
-            {
-                var (t2Url, t2Ms) = await TimedResolve(() => ResolveTier2(targetUrl, player));
-                result = t2Url;
-                _logger.Debug($"[Tier 2] resolved in {t2Ms}ms");
-                if (result != null && !await CheckUrlReachable(result))
-                {
-                    _logger.Warning("Tier 2 URL failed reachability check. Falling back to Tier 3.");
-                    result = null;
-                }
-                if (result == null)
-                {
-                    _logger.Warning("Tier 2 failed. Falling back to Tier 3.");
-                    var (t3Url, t3Ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args));
-                    result = t3Url;
-                    activeTier = "tier3";
-                    _logger.Debug($"[Tier 3] resolved in {t3Ms}ms");
-                }
-            }
-            else if (activeTier == "tier3")
-            {
-                var (t3Url, t3Ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args));
-                result = t3Url;
-                _logger.Debug($"[Tier 3] resolved in {t3Ms}ms");
-            }
-            else if (activeTier == "tier4")
+            if (activeTier == "tier4")
             {
                 _logger.Info("Tier 4 active: Returning original URL (Passthrough)");
                 result = targetUrl;
             }
-
-            if (result == null && activeTier != "tier4")
+            else
             {
-                _logger.Warning("All active tiers failed. Attempting Tier 4 fallback.");
-                result = targetUrl;
-                activeTier = "tier4";
+                // Build ordered cascade starting from preferred tier, skipping disabled tiers
+                var allTiers = new[] { "tier1", "tier2", "tier3" };
+                int startIdx = Array.IndexOf(allTiers, activeTier);
+                if (startIdx < 0) startIdx = 0;
+                var cascade = allTiers.Skip(startIdx).Where(t => !disabled.Contains(t)).ToList();
+
+                foreach (var tier in cascade)
+                {
+                    if (tier == "tier1")
+                    {
+                        var (url, ms) = await TimedResolve(() => ResolveTier1(targetUrl, player));
+                        _logger.Debug($"[Tier 1] resolved in {ms}ms");
+                        if (url != null && await CheckUrlReachable(url)) { result = url; activeTier = "tier1"; break; }
+                        _logger.Warning("Tier 1 failed/unreachable, trying next.");
+                    }
+                    else if (tier == "tier2")
+                    {
+                        var (url, ms) = await TimedResolve(() => ResolveTier2(targetUrl, player));
+                        _logger.Debug($"[Tier 2] resolved in {ms}ms");
+                        if (url != null && await CheckUrlReachable(url)) { result = url; activeTier = "tier2"; break; }
+                        _logger.Warning("Tier 2 failed/unreachable, trying next.");
+                    }
+                    else if (tier == "tier3")
+                    {
+                        var (url, ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args));
+                        _logger.Debug($"[Tier 3] resolved in {ms}ms");
+                        if (url != null) { result = url; activeTier = "tier3"; break; }
+                        _logger.Warning("Tier 3 failed.");
+                    }
+                }
+
+                // Tier 4 passthrough fallback (if not disabled)
+                if (result == null && !disabled.Contains("tier4"))
+                {
+                    _logger.Warning("All active tiers failed. Using Tier 4 passthrough.");
+                    result = targetUrl;
+                    activeTier = "tier4";
+                }
             }
         }
         catch (Exception ex)

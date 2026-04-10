@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { onMounted } from 'vue'
 import { useAppStore } from './stores/appStore'
 import ThreeBackground from './components/ThreeBackground.vue'
 import Sidebar from './components/layout/Sidebar.vue'
@@ -26,28 +26,12 @@ const declineHostsPrompt = (neverAskAgain: boolean) => {
   appStore.showHostsPrompt = false
 }
 
-const uptime = ref('00:00:00')
-let uptimeInterval: ReturnType<typeof setInterval> | undefined
-const startTime = Date.now()
-
 onMounted(() => {
-  uptimeInterval = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - startTime) / 1000)
-    const h = String(Math.floor(elapsed / 3600)).padStart(2, '0')
-    const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0')
-    const s = String(elapsed % 60).padStart(2, '0')
-    uptime.value = `${h}:${m}:${s}`
-  }, 1000)
-
   if (!appStore.initBridge()) {
     window.addEventListener('photino-ready', () => {
       appStore.initBridge();
     });
   }
-})
-
-onUnmounted(() => {
-  if (uptimeInterval) clearInterval(uptimeInterval)
 })
 </script>
 
@@ -133,24 +117,11 @@ onUnmounted(() => {
       </div>
 
       <!-- Footer Area -->
-      <footer class="px-8 py-6 border-t border-white/5 bg-black/20 backdrop-blur-xl flex items-center justify-between z-20">
-        <div class="flex items-center gap-3 text-[8px] font-bold text-white/20 uppercase tracking-[0.2em]">
-          <span>&copy; {{ new Date().getFullYear() }} WhyKnot</span>
-        </div>
-        
-        <div class="flex items-center gap-8 font-mono text-[8px] uppercase tracking-widest text-white/20">
-          <div class="flex items-center gap-2">
-            <span class="w-1 h-1 bg-blue-500/40 rounded-full"></span>
-            Build: <span class="text-white/40">{{ appStore.version }}</span>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="w-1 h-1 bg-emerald-500/40 rounded-full"></span>
-            Cloud: <span class="text-white/40">WhyKnot.dev</span>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="w-1 h-1 bg-purple-500/40 rounded-full"></span>
-            Uptime: <span class="text-white/40 tabular-nums">{{ uptime }}</span>
-          </div>
+      <footer class="px-8 py-4 border-t border-white/5 bg-black/20 backdrop-blur-xl flex items-center justify-between z-20">
+        <span class="text-[8px] font-bold text-white/20 uppercase tracking-[0.2em]">&copy; {{ new Date().getFullYear() }} WhyKnot</span>
+        <div class="flex items-center gap-2 font-mono text-[8px] uppercase tracking-widest text-white/20">
+          <span class="w-1 h-1 bg-blue-500/40 rounded-full"></span>
+          Build: <span class="text-white/40">{{ appStore.version }}</span>
         </div>
       </footer>
     </main>

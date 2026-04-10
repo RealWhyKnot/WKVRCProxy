@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
-import { useAppStore } from '../stores/appStore'
+import { useAppStore, TIER_DISPLAY } from '../stores/appStore'
 
 const appStore = useAppStore()
 
@@ -32,13 +32,6 @@ function useAnimatedNumber(source: () => number, duration = 600) {
   return display
 }
 
-const tierDisplay: Record<string, { short: string, color: string }> = {
-  'tier1': { short: 'Local', color: 'bg-blue-500' },
-  'tier2': { short: 'Cloud', color: 'bg-purple-500' },
-  'tier3': { short: 'Fallback', color: 'bg-amber-500' },
-  'tier4': { short: 'Direct', color: 'bg-white/20' }
-}
-
 const totalResolutions = computed(() => {
   return Object.values(appStore.status.stats.tierStats).reduce((a, b) => a + b, 0)
 })
@@ -68,19 +61,13 @@ const animatedTierValues: Record<string, ReturnType<typeof useAnimatedNumber>> =
   tier4: animatedTier4
 }
 
-// --- Success rate ---
-const successRate = computed(() => {
-  const history = appStore.config.history
-  if (history.length === 0) return 0
-  const successes = history.filter(e => e.Success).length
-  return Math.round((successes / history.length) * 100)
-})
-const animatedSuccessRate = useAnimatedNumber(() => successRate.value)
+// --- Success rate (from store) ---
+const animatedSuccessRate = useAnimatedNumber(() => appStore.successRate)
 
 // SVG ring constants
 const ringRadius = 46
 const ringCircumference = 2 * Math.PI * ringRadius
-const successDash = computed(() => (successRate.value / 100) * ringCircumference)
+const successDash = computed(() => (appStore.successRate / 100) * ringCircumference)
 
 // --- Sparkline ---
 const sparklinePoints = computed(() => {
@@ -180,25 +167,28 @@ const isResolving = computed(() => appStore.status.stats.activeCount > 0)
       </div>
 
       <div class="space-y-6 relative z-10">
-        <div class="h-4 w-full bg-white/5 rounded-full overflow-hidden flex border border-white/5">
-          <div v-for="(pct, tier) in tierPercentages" :key="tier"
-               :class="[tierDisplay[tier]?.color, 'h-full transition-all duration-1000 ease-out border-r border-black/20 last:border-0']"
-               :style="{ width: pct + '%' }">
+        <template v-if="totalResolutions > 0">
+          <div class="h-4 w-full bg-white/5 rounded-full overflow-hidden flex border border-white/5">
+            <div v-for="(pct, tier) in tierPercentages" :key="tier"
+                 :class="[TIER_DISPLAY[tier]?.color, 'h-full transition-all duration-1000 ease-out border-r border-black/20 last:border-0']"
+                 :style="{ width: pct + '%' }">
+            </div>
           </div>
-        </div>
 
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div v-for="(data, tier) in tierDisplay" :key="tier" class="space-y-1 group/tier bg-white/[0.01] p-4 rounded-2xl border border-transparent hover:border-white/10 transition-all transition-shadow duration-500 hover:shadow-[0_0_20px_rgba(59,130,246,0.07)]">
-            <div class="flex items-center gap-2">
-              <div :class="[data.color, 'w-1.5 h-1.5 rounded-full']"></div>
-              <span class="text-[10px] font-black uppercase tracking-widest text-white/55 italic group-hover/tier:text-white transition-colors">{{ data.short }}</span>
-            </div>
-            <div class="flex items-baseline gap-2">
-              <p class="text-lg font-black italic text-white/90">{{ animatedTierValues[tier]?.value ?? 0 }}</p>
-              <p class="text-[9px] font-black uppercase tracking-widest text-white/35">{{ Math.round(tierPercentages[tier] || 0) }}%</p>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div v-for="(data, tier) in TIER_DISPLAY" :key="tier" class="space-y-1 group/tier bg-white/[0.01] p-4 rounded-2xl border border-transparent hover:border-white/10 transition-all transition-shadow duration-500 hover:shadow-[0_0_20px_rgba(59,130,246,0.07)]">
+              <div class="flex items-center gap-2">
+                <div :class="[data.color, 'w-1.5 h-1.5 rounded-full']"></div>
+                <span class="text-[10px] font-black uppercase tracking-widest text-white/55 italic group-hover/tier:text-white transition-colors">{{ data.short }}</span>
+              </div>
+              <div class="flex items-baseline gap-2">
+                <p class="text-lg font-black italic text-white/90">{{ animatedTierValues[tier]?.value ?? 0 }}</p>
+                <p class="text-[9px] font-black uppercase tracking-widest text-white/35">{{ Math.round(tierPercentages[tier] || 0) }}%</p>
+              </div>
             </div>
           </div>
-        </div>
+        </template>
+        <div v-else class="py-6 text-center uppercase tracking-[0.4em] text-white/20 text-[9px] font-black italic">No resolutions yet</div>
 
         <!-- Success Rate Donut -->
         <div class="flex items-center gap-6 pt-2">
@@ -223,7 +213,7 @@ const isResolving = computed(() => appStore.status.stats.activeCount > 0)
           </div>
           <div class="space-y-1">
             <p class="text-sm font-black uppercase tracking-tighter italic text-white/80">Success Rate</p>
-            <p class="text-[9px] text-white/40 font-black uppercase tracking-widest">Based on {{ appStore.config.history.length }} requests</p>
+            <p class="text-[9px] text-white/40 font-black uppercase tracking-widest">Based on {{ appStore.config.history.length }} {{ appStore.config.history.length === 1 ? 'request' : 'requests' }}</p>
             <div class="flex items-center gap-3 mt-2">
               <div class="flex items-center gap-1.5">
                 <span class="w-2 h-2 rounded-full bg-green-500"></span>
@@ -287,7 +277,7 @@ const isResolving = computed(() => appStore.status.stats.activeCount > 0)
             <div class="min-w-0 flex-grow">
               <p class="text-[11px] font-black text-white/80 truncate italic group-hover/item:text-blue-400 transition-colors">{{ entry.OriginalUrl }}</p>
               <div class="flex items-center gap-2 mt-1">
-                <span class="text-[8px] font-black uppercase tracking-widest text-white/45 italic">{{ tierDisplay[entry.Tier.split('-')[0]]?.short || entry.Tier }}</span>
+                <span class="text-[8px] font-black uppercase tracking-widest text-white/45 italic">{{ TIER_DISPLAY[entry.Tier.split('-')[0]]?.short || entry.Tier }}</span>
                 <span class="w-0.5 h-0.5 bg-white/20 rounded-full"></span>
                 <span class="text-[8px] font-bold text-white/45 uppercase tabular-nums tracking-widest">{{ new Date(entry.Timestamp).toLocaleTimeString() }}</span>
               </div>

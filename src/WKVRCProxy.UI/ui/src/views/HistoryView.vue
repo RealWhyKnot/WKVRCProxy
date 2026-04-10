@@ -1,26 +1,16 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { useAppStore } from '../stores/appStore'
+import { useAppStore, TIER_DISPLAY } from '../stores/appStore'
 
 const appStore = useAppStore()
 
 const searchQuery = ref('')
 const selectedTier = ref<string | null>(null)
 
-const tierDisplay: Record<string, { short: string, long: string }> = {
-  'tier1': { short: 'Local', long: 'Fastest, offline-capable local extraction.' },
-  'tier2': { short: 'Cloud', long: 'Reliable cloud-based resolution via whyknot.dev.' },
-  'tier3': { short: 'VRChat', long: 'Original VRChat yt-dlp fallback.' },
-  'tier4': { short: 'Direct', long: 'No resolution, raw URL passthrough.' }
-}
-
 const tierFilterOptions = [
   { key: null, label: 'All' },
-  { key: 'tier1', label: 'Local' },
-  { key: 'tier2', label: 'Cloud' },
-  { key: 'tier3', label: 'VRChat' },
-  { key: 'tier4', label: 'Direct' }
-] as const
+  ...Object.entries(TIER_DISPLAY).map(([key, data]) => ({ key, label: data.short }))
+]
 
 const totalCount = computed(() => appStore.config.history.length)
 const successCount = computed(() => appStore.config.history.filter((e: any) => e.Success).length)
@@ -139,8 +129,8 @@ function truncate(str: string, len: number) {
             </td>
             <td class="px-6 py-4">
               <div class="flex items-center gap-2">
-                <span :title="tierDisplay[entry.Tier.split('-')[0]]?.long" class="px-3 py-1 bg-white/5 rounded-lg text-[8px] font-black uppercase tracking-widest border border-white/5 group-hover:border-blue-500/20 transition-all italic">
-                  {{ tierDisplay[entry.Tier.split('-')[0]]?.short || entry.Tier }}
+                <span :title="TIER_DISPLAY[entry.Tier.split('-')[0]]?.long" class="px-3 py-1 bg-white/5 rounded-lg text-[8px] font-black uppercase tracking-widest border border-white/5 group-hover:border-blue-500/20 transition-all italic">
+                  {{ TIER_DISPLAY[entry.Tier.split('-')[0]]?.short || entry.Tier }}
                 </span>
                 <i :title="entry.Player" :class="entry.Player === 'AVPro' ? 'bi-camera-video-fill text-purple-400/70' : 'bi-play-circle-fill text-blue-400/70'" class="bi text-xs"></i>
               </div>

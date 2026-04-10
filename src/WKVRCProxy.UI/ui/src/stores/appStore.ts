@@ -1,6 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
+export const TIER_DISPLAY: Record<string, { short: string; long: string; color: string }> = {
+  tier1: { short: 'Local',        long: 'Fastest, offline-capable local extraction.',            color: 'bg-blue-500'   },
+  tier2: { short: 'Cloud',        long: 'Reliable cloud-based resolution via WhyKnot.dev.',      color: 'bg-purple-500' },
+  tier3: { short: 'VRChat Tools', long: 'Original VRChat yt-dlp behavior.',                      color: 'bg-amber-500'  },
+  tier4: { short: 'Passthrough',  long: 'No resolution, returns raw original URL.',              color: 'bg-white/20'   },
+}
+
 export interface RelayEvent {
   id: string;
   timestamp: string;
@@ -39,6 +46,7 @@ export interface AppConfig {
   customVrcPath?: string;
   bypassHostsSetupDeclined?: boolean;
   enableRelayBypass: boolean;
+  disabledTiers: string[];
 }
 
 export interface AppStatus {
@@ -84,14 +92,15 @@ export const useAppStore = defineStore('app', () => {
     history: [],
     userAgent: '',
     bypassHostsSetupDeclined: false,
-    enableRelayBypass: true
+    enableRelayBypass: true,
+    disabledTiers: []
   })
   
   const showHostsPrompt = ref(false)
   const relayEvents = ref<RelayEvent[]>([])
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.10.4-94B7')
+  const version = ref('2026.4.10.5-3474')
 
   function handleMessage(message: string) {
     try {
@@ -207,6 +216,7 @@ export const useAppStore = defineStore('app', () => {
     clearLogs
   }
 })
+
 
 
 

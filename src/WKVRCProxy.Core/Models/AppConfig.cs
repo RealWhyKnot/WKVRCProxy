@@ -50,4 +50,7 @@ public class AppConfig
 
     [JsonPropertyName("enableRelayBypass")]
     public bool EnableRelayBypass { get; set; } = true;
+
+    [JsonPropertyName("disabledTiers")]
+    public List<string> DisabledTiers { get; set; } = new();
 }

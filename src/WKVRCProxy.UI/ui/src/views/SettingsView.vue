@@ -1,14 +1,22 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useAppStore } from '../stores/appStore'
+import { useAppStore, TIER_DISPLAY } from '../stores/appStore'
 
 const appStore = useAppStore()
 
-const tierDisplay: Record<string, { short: string, long: string }> = {
-  'tier1': { short: 'Local', long: 'Fastest, offline-capable local extraction.' },
-  'tier2': { short: 'Cloud', long: 'Reliable, requires internet.' },
-  'tier3': { short: 'VRChat Tools', long: 'Original VRChat behavior.' },
-  'tier4': { short: 'Passthrough', long: 'No resolution, raw URL.' }
+function isTierEnabled(tierId: string): boolean {
+  return !(appStore.config.disabledTiers ?? []).includes(tierId)
+}
+
+function toggleTier(tierId: string) {
+  if (!appStore.config.disabledTiers) appStore.config.disabledTiers = []
+  const idx = appStore.config.disabledTiers.indexOf(tierId)
+  if (idx >= 0) {
+    appStore.config.disabledTiers.splice(idx, 1)
+  } else {
+    appStore.config.disabledTiers.push(tierId)
+  }
+  appStore.saveConfig()
 }
 
 const showSystemInfo = ref(false)
@@ -82,6 +90,35 @@ function clearHistory() {
         </div>
       </section>
 
+      <!-- Tier Configuration -->
+      <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-5 hover:border-blue-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl">
+        <div class="flex items-center gap-4">
+          <div class="w-10 h-10 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500">
+            <i class="bi bi-layers-fill text-xl"></i>
+          </div>
+          <div>
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Tier Configuration</h4>
+            <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Enable or disable individual extraction methods</p>
+          </div>
+        </div>
+        <div class="space-y-3">
+          <div v-for="(data, tierId) in TIER_DISPLAY" :key="tierId"
+               @click="toggleTier(tierId)"
+               class="flex items-center gap-4 p-4 bg-white/[0.02] border border-white/5 rounded-2xl cursor-pointer hover:bg-white/[0.04] hover:border-white/10 transition-all group/tier"
+               :class="isTierEnabled(tierId) ? '' : 'opacity-50'">
+            <div :class="[data.color, 'w-2.5 h-2.5 rounded-full shrink-0']"></div>
+            <div class="flex-grow min-w-0">
+              <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80 group-hover/tier:text-white transition-colors">{{ data.short }}</p>
+              <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5">{{ data.long }}</p>
+            </div>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-500 shrink-0', isTierEnabled(tierId) ? 'bg-blue-600 shadow-[0_0_12px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-500', isTierEnabled(tierId) ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+        </div>
+        <p class="text-[8px] text-white/25 font-bold uppercase tracking-widest italic">Passthrough always activates on unrecoverable error regardless of this setting.</p>
+      </section>
+
       <!-- Preferred Tier -->
       <div class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] flex items-center justify-between group hover:border-blue-500/20 transition-all duration-500 backdrop-blur-3xl shadow-xl">
         <div class="max-w-md">
@@ -89,7 +126,7 @@ function clearHistory() {
           <p class="text-[9px] text-white/50 font-black uppercase tracking-widest">Which extraction method to try first</p>
         </div>
         <select v-model="appStore.config.preferredTier" @change="appStore.saveConfig()" class="bg-[#010103] border border-white/10 rounded-xl px-6 py-3 text-[10px] font-black uppercase tracking-widest focus:outline-none focus:border-blue-500 transition-all cursor-pointer text-white/80 hover:text-white italic appearance-none shadow-2xl">
-          <option v-for="(data, id) in tierDisplay" :key="id" :value="id">{{ data.short }} — {{ truncate(data.long, 35) }}</option>
+          <option v-for="(data, id) in TIER_DISPLAY" :key="id" :value="id">{{ data.short }} — {{ truncate(data.long, 35) }}</option>
         </select>
       </div>
 
