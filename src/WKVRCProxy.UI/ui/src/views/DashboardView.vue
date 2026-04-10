@@ -1,8 +1,36 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../stores/appStore'
 
 const appStore = useAppStore()
+
+// --- Composable: useAnimatedNumber ---
+function useAnimatedNumber(source: () => number, duration = 600) {
+  const display = ref(0)
+  let animId = 0
+
+  function animate(from: number, to: number) {
+    cancelAnimationFrame(animId)
+    const start = performance.now()
+    const step = (now: number) => {
+      const elapsed = Math.min((now - start) / duration, 1)
+      // ease-out cubic
+      const t = 1 - Math.pow(1 - elapsed, 3)
+      display.value = Math.round(from + (to - from) * t)
+      if (elapsed < 1) {
+        animId = requestAnimationFrame(step)
+      }
+    }
+    animId = requestAnimationFrame(step)
+  }
+
+  watch(source, (newVal, oldVal) => {
+    animate(oldVal ?? 0, newVal)
+  }, { immediate: true })
+
+  onUnmounted(() => cancelAnimationFrame(animId))
+  return display
+}
 
 const tierDisplay: Record<string, { short: string, color: string }> = {
   'tier1': { short: 'Local', color: 'bg-blue-500' },
@@ -26,6 +54,75 @@ const tierPercentages = computed(() => {
 })
 
 const recentHistory = computed(() => appStore.config.history.slice(0, 5))
+
+// --- Animated counters ---
+const animatedTotal = useAnimatedNumber(() => totalResolutions.value)
+const animatedTier1 = useAnimatedNumber(() => appStore.status.stats.tierStats['tier1'] ?? 0)
+const animatedTier2 = useAnimatedNumber(() => appStore.status.stats.tierStats['tier2'] ?? 0)
+const animatedTier3 = useAnimatedNumber(() => appStore.status.stats.tierStats['tier3'] ?? 0)
+const animatedTier4 = useAnimatedNumber(() => appStore.status.stats.tierStats['tier4'] ?? 0)
+const animatedTierValues: Record<string, ReturnType<typeof useAnimatedNumber>> = {
+  tier1: animatedTier1,
+  tier2: animatedTier2,
+  tier3: animatedTier3,
+  tier4: animatedTier4
+}
+
+// --- Success rate ---
+const successRate = computed(() => {
+  const history = appStore.config.history
+  if (history.length === 0) return 0
+  const successes = history.filter(e => e.Success).length
+  return Math.round((successes / history.length) * 100)
+})
+const animatedSuccessRate = useAnimatedNumber(() => successRate.value)
+
+// SVG ring constants
+const ringRadius = 46
+const ringCircumference = 2 * Math.PI * ringRadius
+const successDash = computed(() => (successRate.value / 100) * ringCircumference)
+
+// --- Sparkline ---
+const sparklinePoints = computed(() => {
+  const entries = appStore.config.history.slice(0, 20).reverse()
+  if (entries.length === 0) return ''
+  const width = 200
+  const height = 40
+  const padding = 4
+  const usableH = height - padding * 2
+  const stepX = entries.length > 1 ? (width - padding * 2) / (entries.length - 1) : 0
+  return entries.map((e, i) => {
+    const x = padding + i * stepX
+    const y = e.Success ? padding : padding + usableH
+    return `${x},${y}`
+  }).join(' ')
+})
+
+// --- Uptime ---
+const uptime = ref('00:00:00')
+let uptimeStart = 0
+let uptimeInterval = 0
+
+function formatUptime(ms: number): string {
+  const totalSec = Math.floor(ms / 1000)
+  const h = String(Math.floor(totalSec / 3600)).padStart(2, '0')
+  const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0')
+  const s = String(totalSec % 60).padStart(2, '0')
+  return `${h}:${m}:${s}`
+}
+
+onMounted(() => {
+  uptimeStart = Date.now()
+  uptimeInterval = window.setInterval(() => {
+    uptime.value = formatUptime(Date.now() - uptimeStart)
+  }, 1000)
+})
+onUnmounted(() => {
+  clearInterval(uptimeInterval)
+})
+
+// --- Active pulse ---
+const isResolving = computed(() => appStore.status.stats.activeCount > 0)
 </script>
 
 <template>
@@ -43,10 +140,11 @@ const recentHistory = computed(() => appStore.config.history.slice(0, 5))
         </div>
       </div>
 
-      <div class="flex gap-6 items-center bg-white/[0.02] border border-white/5 px-6 py-4 rounded-2xl backdrop-blur-xl">
-        <div class="text-center">
+      <div class="flex gap-6 items-center bg-white/[0.02] border border-white/5 px-6 py-4 rounded-2xl backdrop-blur-xl transition-shadow duration-500 hover:shadow-[0_0_30px_rgba(59,130,246,0.1)]">
+        <div class="text-center relative">
           <p class="text-[8px] font-black uppercase tracking-widest text-white/45 italic">Resolving</p>
-          <p class="text-lg font-black italic">{{ appStore.status.stats.activeCount }}</p>
+          <p class="text-lg font-black italic relative z-10">{{ appStore.status.stats.activeCount }}</p>
+          <span v-if="isResolving" class="absolute inset-0 rounded-xl bg-blue-500/20 animate-[pulse-glow_2s_ease-in-out_infinite] blur-md"></span>
         </div>
         <div class="w-[1px] h-6 bg-white/10"></div>
         <div class="text-center">
@@ -58,11 +156,16 @@ const recentHistory = computed(() => appStore.config.history.slice(0, 5))
           <p class="text-[8px] font-black uppercase tracking-widest text-white/45 italic">Cloud</p>
           <p class="text-lg font-black italic text-purple-400 uppercase">{{ appStore.status.stats.node.split('.')[0] }}</p>
         </div>
+        <div class="w-[1px] h-6 bg-white/10"></div>
+        <div class="text-center">
+          <p class="text-[8px] font-black uppercase tracking-widest text-white/45 italic">Uptime</p>
+          <p class="text-lg font-black italic text-emerald-400 tabular-nums">{{ uptime }}</p>
+        </div>
       </div>
     </div>
 
     <!-- Tier Usage Chart -->
-    <div class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-8 relative overflow-hidden group">
+    <div class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-8 relative overflow-hidden group transition-shadow duration-500 hover:shadow-[0_0_30px_rgba(59,130,246,0.1)]">
       <div class="absolute -top-20 -right-20 w-64 h-64 bg-blue-500/5 blur-[100px] rounded-full group-hover:bg-blue-500/10 transition-all duration-1000"></div>
 
       <div class="flex justify-between items-center relative z-10">
@@ -71,7 +174,7 @@ const recentHistory = computed(() => appStore.config.history.slice(0, 5))
           <p class="text-[9px] text-white/45 font-black uppercase tracking-widest">Requests handled per extraction tier</p>
         </div>
         <div class="text-right">
-          <p class="text-3xl font-black italic text-white/90">{{ totalResolutions }}</p>
+          <p class="text-3xl font-black italic text-white/90">{{ animatedTotal }}</p>
           <p class="text-[8px] font-black uppercase tracking-widest text-white/45">Total Resolved</p>
         </div>
       </div>
@@ -85,14 +188,51 @@ const recentHistory = computed(() => appStore.config.history.slice(0, 5))
         </div>
 
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div v-for="(data, tier) in tierDisplay" :key="tier" class="space-y-1 group/tier bg-white/[0.01] p-4 rounded-2xl border border-transparent hover:border-white/10 transition-all">
+          <div v-for="(data, tier) in tierDisplay" :key="tier" class="space-y-1 group/tier bg-white/[0.01] p-4 rounded-2xl border border-transparent hover:border-white/10 transition-all transition-shadow duration-500 hover:shadow-[0_0_20px_rgba(59,130,246,0.07)]">
             <div class="flex items-center gap-2">
               <div :class="[data.color, 'w-1.5 h-1.5 rounded-full']"></div>
               <span class="text-[10px] font-black uppercase tracking-widest text-white/55 italic group-hover/tier:text-white transition-colors">{{ data.short }}</span>
             </div>
             <div class="flex items-baseline gap-2">
-              <p class="text-lg font-black italic text-white/90">{{ appStore.status.stats.tierStats[tier] || 0 }}</p>
+              <p class="text-lg font-black italic text-white/90">{{ animatedTierValues[tier]?.value ?? 0 }}</p>
               <p class="text-[9px] font-black uppercase tracking-widest text-white/35">{{ Math.round(tierPercentages[tier] || 0) }}%</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Success Rate Donut -->
+        <div class="flex items-center gap-6 pt-2">
+          <div class="relative w-[120px] h-[120px] shrink-0">
+            <svg viewBox="0 0 120 120" class="w-full h-full -rotate-90">
+              <!-- Background ring -->
+              <circle cx="60" cy="60" :r="ringRadius" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="10" />
+              <!-- Failure portion (full ring, behind success) -->
+              <circle cx="60" cy="60" :r="ringRadius" fill="none" stroke="rgba(239,68,68,0.35)" stroke-width="10"
+                      :stroke-dasharray="ringCircumference"
+                      stroke-linecap="round" />
+              <!-- Success portion -->
+              <circle cx="60" cy="60" :r="ringRadius" fill="none" stroke="rgb(34,197,94)" stroke-width="10"
+                      :stroke-dasharray="`${successDash} ${ringCircumference}`"
+                      stroke-linecap="round"
+                      style="transition: stroke-dasharray 1s ease-out" />
+            </svg>
+            <!-- Center text -->
+            <div class="absolute inset-0 flex flex-col items-center justify-center rotate-0">
+              <span class="text-2xl font-black italic text-white/90 tabular-nums">{{ animatedSuccessRate }}%</span>
+            </div>
+          </div>
+          <div class="space-y-1">
+            <p class="text-sm font-black uppercase tracking-tighter italic text-white/80">Success Rate</p>
+            <p class="text-[9px] text-white/40 font-black uppercase tracking-widest">Based on {{ appStore.config.history.length }} requests</p>
+            <div class="flex items-center gap-3 mt-2">
+              <div class="flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-green-500"></span>
+                <span class="text-[9px] font-black text-white/50 uppercase tracking-widest">Success</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-red-500/50"></span>
+                <span class="text-[9px] font-black text-white/50 uppercase tracking-widest">Failed</span>
+              </div>
             </div>
           </div>
         </div>
@@ -101,10 +241,42 @@ const recentHistory = computed(() => appStore.config.history.slice(0, 5))
 
     <!-- Recent History & Logs -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-      <div class="bg-white/[0.02] border border-white/5 rounded-[32px] p-8 space-y-6 backdrop-blur-3xl group">
+      <div class="bg-white/[0.02] border border-white/5 rounded-[32px] p-8 space-y-6 backdrop-blur-3xl group transition-shadow duration-500 hover:shadow-[0_0_30px_rgba(59,130,246,0.1)]">
         <div class="flex justify-between items-center">
           <h3 class="text-lg font-black uppercase tracking-tighter italic">Recent Activity</h3>
           <button @click="appStore.activeTab = 'history'" class="text-[9px] font-black uppercase tracking-widest text-blue-400 hover:text-blue-300 transition-colors italic">View History</button>
+        </div>
+
+        <!-- Sparkline -->
+        <div v-if="appStore.config.history.length > 1" class="px-1">
+          <svg width="200" height="40" viewBox="0 0 200 40" class="w-full" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stop-color="rgb(59,130,246)" />
+                <stop offset="100%" stop-color="rgb(34,211,238)" />
+              </linearGradient>
+            </defs>
+            <polyline
+              :points="sparklinePoints"
+              fill="none"
+              stroke="url(#sparkGrad)"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <!-- Dots on each point -->
+            <circle v-for="(entry, i) in appStore.config.history.slice(0, 20).reverse()" :key="'dot-' + i"
+              :cx="appStore.config.history.slice(0, 20).length > 1 ? 4 + i * ((200 - 8) / (Math.min(appStore.config.history.length, 20) - 1)) : 100"
+              :cy="entry.Success ? 4 : 36"
+              r="2.5"
+              :fill="entry.Success ? 'rgb(34,211,238)' : 'rgb(239,68,68)'"
+              opacity="0.7"
+            />
+          </svg>
+          <div class="flex justify-between mt-1">
+            <span class="text-[7px] font-black uppercase tracking-widest text-white/25">Older</span>
+            <span class="text-[7px] font-black uppercase tracking-widest text-white/25">Recent</span>
+          </div>
         </div>
 
         <div class="space-y-3">
@@ -132,7 +304,7 @@ const recentHistory = computed(() => appStore.config.history.slice(0, 5))
         </div>
       </div>
 
-      <div class="bg-white/[0.02] border border-white/5 rounded-[32px] p-8 space-y-6 backdrop-blur-3xl group">
+      <div class="bg-white/[0.02] border border-white/5 rounded-[32px] p-8 space-y-6 backdrop-blur-3xl group transition-shadow duration-500 hover:shadow-[0_0_30px_rgba(59,130,246,0.1)]">
         <div class="flex justify-between items-center">
           <h3 class="text-lg font-black uppercase tracking-tighter italic">Recent Logs</h3>
           <button @click="appStore.activeTab = 'logs'" class="text-[9px] font-black uppercase tracking-widest text-white/45 hover:text-white/70 transition-colors italic">Full Logs</button>
@@ -148,3 +320,16 @@ const recentHistory = computed(() => appStore.config.history.slice(0, 5))
     </div>
   </div>
 </template>
+
+<style scoped>
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.15);
+  }
+}
+</style>

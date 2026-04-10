@@ -1,13 +1,49 @@
 <script setup lang="ts">
+import { ref, computed } from 'vue'
 import { useAppStore } from '../stores/appStore'
 
 const appStore = useAppStore()
+
+const searchQuery = ref('')
+const selectedTier = ref<string | null>(null)
 
 const tierDisplay: Record<string, { short: string, long: string }> = {
   'tier1': { short: 'Local', long: 'Fastest, offline-capable local extraction.' },
   'tier2': { short: 'Cloud', long: 'Reliable cloud-based resolution via whyknot.dev.' },
   'tier3': { short: 'VRChat', long: 'Original VRChat yt-dlp fallback.' },
   'tier4': { short: 'Direct', long: 'No resolution, raw URL passthrough.' }
+}
+
+const tierFilterOptions = [
+  { key: null, label: 'All' },
+  { key: 'tier1', label: 'Local' },
+  { key: 'tier2', label: 'Cloud' },
+  { key: 'tier3', label: 'VRChat' },
+  { key: 'tier4', label: 'Direct' }
+] as const
+
+const totalCount = computed(() => appStore.config.history.length)
+const successCount = computed(() => appStore.config.history.filter((e: any) => e.Success).length)
+const failedCount = computed(() => appStore.config.history.filter((e: any) => !e.Success).length)
+const liveCount = computed(() => appStore.config.history.filter((e: any) => e.IsLive).length)
+
+const filteredHistory = computed(() => {
+  let list = appStore.config.history
+  if (selectedTier.value) {
+    list = list.filter((e: any) => e.Tier.split('-')[0] === selectedTier.value)
+  }
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.trim().toLowerCase()
+    list = list.filter((e: any) =>
+      e.OriginalUrl.toLowerCase().includes(q) ||
+      e.ResolvedUrl.toLowerCase().includes(q)
+    )
+  }
+  return list
+})
+
+function setTierFilter(tier: string | null) {
+  selectedTier.value = selectedTier.value === tier ? null : tier
 }
 
 function formatTime(ts: string) {
@@ -22,11 +58,65 @@ function truncate(str: string, len: number) {
 
 <template>
   <div class="p-8 space-y-8 animate-in slide-in-from-bottom-4 duration-500">
-    <div class="space-y-2">
-      <h2 class="text-3xl font-black uppercase tracking-tighter italic">Resolution <span class="text-blue-500">History</span></h2>
-      <p class="text-white/45 font-black uppercase tracking-[0.4em] text-[9px] ml-1">All resolved requests</p>
+    <!-- Header row with result count -->
+    <div class="flex items-start justify-between">
+      <div class="space-y-2">
+        <h2 class="text-3xl font-black uppercase tracking-tighter italic">Resolution <span class="text-blue-500">History</span></h2>
+        <p class="text-white/45 font-black uppercase tracking-[0.4em] text-[9px] ml-1">All resolved requests</p>
+      </div>
+      <span class="text-[8px] font-black uppercase tracking-widest text-white/25 italic tabular-nums pt-2">
+        {{ filteredHistory.length }} of {{ totalCount }} entries
+      </span>
     </div>
 
+    <!-- Stats summary row -->
+    <div class="grid grid-cols-4 gap-3">
+      <div class="bg-white/[0.03] border border-white/5 rounded-xl px-4 py-3">
+        <div class="text-lg font-black italic tabular-nums text-white/80">{{ totalCount }}</div>
+        <div class="text-[8px] font-black uppercase tracking-widest text-white/45">Total</div>
+      </div>
+      <div class="bg-white/[0.03] border border-white/5 rounded-xl px-4 py-3">
+        <div class="text-lg font-black italic tabular-nums text-emerald-400">{{ successCount }}</div>
+        <div class="text-[8px] font-black uppercase tracking-widest text-white/45">Success</div>
+      </div>
+      <div class="bg-white/[0.03] border border-white/5 rounded-xl px-4 py-3">
+        <div class="text-lg font-black italic tabular-nums text-red-400">{{ failedCount }}</div>
+        <div class="text-[8px] font-black uppercase tracking-widest text-white/45">Failed</div>
+      </div>
+      <div class="bg-white/[0.03] border border-white/5 rounded-xl px-4 py-3">
+        <div class="text-lg font-black italic tabular-nums text-green-400 flex items-center gap-2">
+          {{ liveCount }}
+          <span v-if="liveCount > 0" class="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse inline-block"></span>
+        </div>
+        <div class="text-[8px] font-black uppercase tracking-widest text-white/45">Live</div>
+      </div>
+    </div>
+
+    <!-- Filter toolbar -->
+    <div class="flex items-center gap-3 flex-wrap">
+      <!-- Tier filter pills -->
+      <div class="flex gap-1.5 flex-wrap">
+        <button
+          v-for="opt in tierFilterOptions"
+          :key="String(opt.key)"
+          @click="setTierFilter(opt.key)"
+          :class="['px-3 py-1.5 rounded-xl text-[8px] font-black uppercase tracking-widest transition-all italic border',
+                   selectedTier === opt.key || (opt.key === null && selectedTier === null)
+                     ? 'bg-blue-600/80 text-white border-blue-500/50 shadow-[0_0_10px_rgba(37,99,235,0.25)]'
+                     : 'bg-white/[0.03] text-white/40 hover:text-white/70 border-white/5']">
+          {{ opt.label }}
+        </button>
+      </div>
+
+      <!-- Search filter input -->
+      <input
+        v-model="searchQuery"
+        type="text"
+        placeholder="Filter by URL..."
+        class="bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2 text-[10px] font-mono text-white/70 focus:outline-none focus:border-blue-500/50 placeholder:text-white/20 transition-all w-48" />
+    </div>
+
+    <!-- Table -->
     <div class="bg-white/[0.02] border border-white/5 rounded-3xl overflow-hidden backdrop-blur-3xl shadow-2xl">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-white/[0.01] text-white/50 font-black uppercase tracking-[0.2em]">
@@ -39,7 +129,7 @@ function truncate(str: string, len: number) {
           </tr>
         </thead>
         <tbody class="divide-y divide-white/5 font-bold">
-          <tr v-for="(entry, i) in appStore.config.history" :key="i" class="hover:bg-white/[0.03] transition-all duration-300 group">
+          <tr v-for="(entry, i) in filteredHistory" :key="i" class="hover:bg-white/[0.03] transition-all duration-300 group">
             <td class="px-6 py-4 text-white/50 font-mono tabular-nums">{{ formatTime(entry.Timestamp) }}</td>
             <td class="px-6 py-4">
               <div class="flex flex-col gap-1">
@@ -67,8 +157,25 @@ function truncate(str: string, len: number) {
               </span>
             </td>
           </tr>
-          <tr v-if="appStore.config.history.length === 0">
-            <td colspan="5" class="px-6 py-20 text-center text-white/25 font-black uppercase tracking-[0.5em] italic">No Records</td>
+          <!-- Empty state -->
+          <tr v-if="filteredHistory.length === 0 && totalCount === 0">
+            <td colspan="5" class="px-6 py-24 text-center">
+              <div class="flex flex-col items-center gap-4 animate-pulse">
+                <i class="bi bi-clock-history text-4xl text-white/10"></i>
+                <div class="space-y-2">
+                  <p class="text-white/25 font-black uppercase tracking-[0.5em] italic text-[10px]">No Records Yet</p>
+                  <p class="text-white/15 text-[9px] font-mono italic max-w-xs mx-auto">Resolution history will appear here once VRChat requests are processed through the proxy.</p>
+                </div>
+              </div>
+            </td>
+          </tr>
+          <tr v-else-if="filteredHistory.length === 0">
+            <td colspan="5" class="px-6 py-16 text-center">
+              <div class="flex flex-col items-center gap-3">
+                <i class="bi bi-funnel text-2xl text-white/10"></i>
+                <p class="text-white/25 font-black uppercase tracking-[0.3em] italic text-[9px]">No entries match current filters</p>
+              </div>
+            </td>
           </tr>
         </tbody>
       </table>

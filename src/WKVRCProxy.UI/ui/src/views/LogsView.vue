@@ -76,11 +76,23 @@ function setLevelFilter(level: number | null) {
       <span class="text-[8px] font-black uppercase tracking-widest text-white/25 ml-auto italic tabular-nums">
         {{ appStore.filteredLogs.length }} / {{ appStore.logs.length }} events
       </span>
+
+      <!-- Clear Logs button -->
+      <button @click="appStore.logs = []" class="text-[9px] font-black uppercase tracking-widest text-white/30 hover:text-red-400 transition-colors italic">
+        Clear
+      </button>
+    </div>
+
+    <!-- Log count by level -->
+    <div class="flex gap-4 text-[8px] font-mono text-white/25 shrink-0">
+      <span v-for="(name, idx) in logLevelNames" :key="idx" :class="logLevelClasses[idx]">
+        {{ name }}: {{ appStore.logs.filter(l => l.Level === idx).length }}
+      </span>
     </div>
 
     <div class="flex-grow bg-white/[0.02] border border-white/5 rounded-[32px] overflow-hidden backdrop-blur-3xl shadow-2xl flex flex-col font-mono text-[9px]">
       <!-- Column headers -->
-      <div class="px-8 py-4 bg-white/[0.01] border-b border-white/5 grid grid-cols-[7rem_6rem_8rem_1fr] gap-4 text-white/30 font-black uppercase tracking-[0.3em] text-[8px] italic shrink-0">
+      <div class="px-8 py-4 bg-white/[0.01] border-b border-white/5 grid grid-cols-[7rem_6rem_8rem_1fr] gap-4 text-white/30 font-black uppercase tracking-[0.3em] text-[8px] italic shrink-0 shadow-[0_4px_12px_rgba(0,0,0,0.3)]">
         <span>Time</span>
         <span>Level</span>
         <span>Source</span>

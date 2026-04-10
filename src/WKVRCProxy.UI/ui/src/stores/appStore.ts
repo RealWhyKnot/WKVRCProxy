@@ -158,6 +158,30 @@ export const useAppStore = defineStore('app', () => {
     sendMessage('EXIT')
   }
 
+  const successRate = computed(() => {
+    const history = config.value.history
+    if (history.length === 0) return 0
+    const successes = history.filter(h => h.Success).length
+    return Math.round((successes / history.length) * 100)
+  })
+
+  const liveStreamCount = computed(() => {
+    return config.value.history.filter(h => h.IsLive).length
+  })
+
+  const totalBytesTransferred = computed(() => {
+    return relayEvents.value.reduce((sum, e) => sum + e.bytesTransferred, 0)
+  })
+
+  function clearHistory() {
+    config.value.history = []
+    saveConfig()
+  }
+
+  function clearLogs() {
+    logs.value = []
+  }
+
   return {
     activeTab,
     logs,
@@ -175,7 +199,12 @@ export const useAppStore = defineStore('app', () => {
     pickVrcPath,
     wipeTools,
     terminate,
-    relayEvents
+    relayEvents,
+    successRate,
+    liveStreamCount,
+    totalBytesTransferred,
+    clearHistory,
+    clearLogs
   }
 })
 

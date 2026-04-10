@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from './stores/appStore'
 import ThreeBackground from './components/ThreeBackground.vue'
 import Sidebar from './components/layout/Sidebar.vue'
@@ -26,17 +26,33 @@ const declineHostsPrompt = (neverAskAgain: boolean) => {
   appStore.showHostsPrompt = false
 }
 
+const uptime = ref('00:00:00')
+let uptimeInterval: ReturnType<typeof setInterval> | undefined
+const startTime = Date.now()
+
 onMounted(() => {
+  uptimeInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000)
+    const h = String(Math.floor(elapsed / 3600)).padStart(2, '0')
+    const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0')
+    const s = String(elapsed % 60).padStart(2, '0')
+    uptime.value = `${h}:${m}:${s}`
+  }, 1000)
+
   if (!appStore.initBridge()) {
     window.addEventListener('photino-ready', () => {
       appStore.initBridge();
     });
   }
 })
+
+onUnmounted(() => {
+  if (uptimeInterval) clearInterval(uptimeInterval)
+})
 </script>
 
 <template>
-  <div class="h-screen w-screen flex overflow-hidden bg-[#010103] text-white font-sans selection:bg-blue-500/30 antialiased">
+  <div class="h-screen w-screen flex overflow-hidden bg-[#0a0e1a] text-white font-sans selection:bg-blue-500/30 antialiased">
     <!-- Critical Failure Overlay -->
     <div v-if="!appStore.isBridgeReady" class="fixed inset-0 z-[100] bg-black flex items-center justify-center backdrop-blur-3xl animate-in fade-in duration-500">
       <div class="text-center space-y-6 max-w-md p-10">
@@ -89,7 +105,8 @@ onMounted(() => {
 
     <!-- 3D Background & Overlays -->
     <ThreeBackground :isReduced="appStore.activeTab !== 'dashboard'" />
-    <div class="fixed inset-0 z-[1] pointer-events-none bg-[radial-gradient(circle_at_center,transparent_0%,#010103_85%)] opacity-90"></div>
+    <div class="fixed inset-0 z-[1] pointer-events-none bg-[radial-gradient(circle_at_center,transparent_0%,#010103_85%)] opacity-60"></div>
+    <div class="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/30 via-transparent to-black/20"></div>
 
     <!-- Sidebar -->
     <Sidebar class="z-20" />
@@ -129,6 +146,10 @@ onMounted(() => {
           <div class="flex items-center gap-2">
             <span class="w-1 h-1 bg-emerald-500/40 rounded-full"></span>
             Cloud: <span class="text-white/40">WhyKnot.dev</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-1 h-1 bg-purple-500/40 rounded-full"></span>
+            Uptime: <span class="text-white/40 tabular-nums">{{ uptime }}</span>
           </div>
         </div>
       </footer>
