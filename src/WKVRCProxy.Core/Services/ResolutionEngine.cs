@@ -27,6 +27,7 @@ public class ResolutionEngine
     private readonly HostsManager _hostsManager;
     private readonly RelayPortManager _relayPortManager;
     private readonly PatcherService _patcher;
+    private readonly CurlImpersonateClient? _curlClient;
 
     public event Action<string, object>? OnStatusUpdate;
     private int _activeResolutions = 0;
@@ -34,7 +35,7 @@ public class ResolutionEngine
         { "tier1", 0 }, { "tier2", 0 }, { "tier3", 0 }, { "tier4", 0 }
     };
 
-    public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager, PatcherService patcher)
+    public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager, PatcherService patcher, CurlImpersonateClient? curlClient = null)
     {
         _logger = logger;
         _settings = settings;
@@ -43,6 +44,7 @@ public class ResolutionEngine
         _hostsManager = hostsManager;
         _relayPortManager = relayPortManager;
         _patcher = patcher;
+        _curlClient = curlClient;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(_settings.Config.UserAgent);
 
@@ -64,16 +66,38 @@ public class ResolutionEngine
         });
     }
 
-    // Quick HEAD request to verify a resolved URL is actually reachable before accepting it.
-    // A 3-second timeout is used to not delay resolution significantly.
+    // Headers sent for reachability checks — mirrors what yt-dlp sends for stream URL validation.
+    private static readonly Dictionary<string, string> _reachabilityHeaders = new()
+    {
+        ["Accept"] = "*/*",
+        ["Accept-Language"] = "en-us,en;q=0.5",
+        ["Range"] = "bytes=0-0"
+    };
+
+    // Verify a resolved URL is reachable before accepting it.
+    // Prefers curl-impersonate (Chrome TLS fingerprint, yt-dlp-compatible headers) so CDNs that
+    // reject plain .NET HttpClient TLS handshakes or HEAD requests are handled correctly.
+    // Falls back to plain HttpClient if curl-impersonate is unavailable.
     private async Task<bool> CheckUrlReachable(string url)
     {
+        if (_curlClient?.IsAvailable == true)
+        {
+            int status = await _curlClient.CheckReachabilityAsync(url, _reachabilityHeaders);
+            // 206 Partial Content, 200 OK (range ignored), 416 Range Not Satisfiable (URL exists)
+            return status is (>= 200 and < 400) or 416;
+        }
+
+        // Fallback: plain HttpClient with yt-dlp-matching headers
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-            using var req = new HttpRequestMessage(HttpMethod.Head, url);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
+            req.Headers.TryAddWithoutValidation("Accept", "*/*");
+            req.Headers.TryAddWithoutValidation("Accept-Language", "en-us,en;q=0.5");
             var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-            return (int)resp.StatusCode < 400;
+            int status = (int)resp.StatusCode;
+            return status < 400 || status == 416;
         }
         catch
         {
@@ -225,14 +249,14 @@ public class ResolutionEngine
     {
         _logger.Debug("[Tier 1] Attempting native yt-dlp resolution...");
 
-        var args = new List<string> { "--get-url", "--no-warnings" };
+        var args = new List<string> { "--get-url", "--no-warnings", "--playlist-items", "1" };
         if (_settings.Config.ForceIPv4) args.Add("--force-ipv4");
 
         if (player == "AVPro")
         {
             // AVPro supports HLS, DASH, and MP4. Prefer HLS first (works for both live and VOD).
             args.Add("-f");
-            args.Add("best[protocol^=m3u8_native]/best[protocol^=http_dash_segments]/best[ext=mp4]/best");
+            args.Add("best[protocol^=m3u8_native]/best[protocol^=http_dash_segments]/best[ext=mp4]/bestaudio/best");
         }
         else
         {
@@ -240,7 +264,7 @@ public class ResolutionEngine
             // and explicitly avoid raw DASH which Unity cannot decode.
             args.Add("-f");
             string res = _settings.Config.PreferredResolution.Replace("p", "");
-            args.Add("best[ext=mp4][height<=" + res + "]/best[ext=mp4]/best[protocol^=m3u8_native]/best[protocol!=http_dash_segments]/best");
+            args.Add("best[ext=mp4][height<=" + res + "]/best[ext=mp4]/best[protocol^=m3u8_native]/bestaudio/best[protocol!=http_dash_segments]/best");
         }
 
         args.Add(url);

@@ -88,5 +88,72 @@ public class CurlImpersonateClient : IProxyModule
         return Task.FromResult(process.StandardOutput.BaseStream);
     }
 
+    // Checks whether a URL is reachable by sending a byte-range GET request and parsing
+    // the HTTP status from the response headers. Uses curl's -D stdout / -o NUL trick so
+    // only headers are captured — body is discarded via the Windows null device.
+    // Follows redirects (-L) and enforces a hard timeout via --max-time.
+    // Returns the final HTTP status code, or -1 on failure/timeout.
+    public async Task<int> CheckReachabilityAsync(string url, Dictionary<string, string>? headers = null, int timeoutSeconds = 5)
+    {
+        if (!IsAvailable) return -1;
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = _executablePath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        psi.ArgumentList.Add("--impersonate"); psi.ArgumentList.Add("chrome116");
+        psi.ArgumentList.Add("-s");             // silent — no progress meter
+        psi.ArgumentList.Add("-L");             // follow redirects
+        psi.ArgumentList.Add("-D"); psi.ArgumentList.Add("-");   // dump response headers to stdout
+        psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("NUL"); // discard body (Windows null device)
+        psi.ArgumentList.Add("--max-time"); psi.ArgumentList.Add(timeoutSeconds.ToString());
+        psi.ArgumentList.Add("-X"); psi.ArgumentList.Add("GET");
+
+        if (headers != null)
+        {
+            foreach (var h in headers)
+            {
+                psi.ArgumentList.Add("-H");
+                psi.ArgumentList.Add(h.Key + ": " + h.Value);
+            }
+        }
+
+        psi.ArgumentList.Add(url);
+
+        Process? process = null;
+        try
+        {
+            process = Process.Start(psi);
+            if (process == null) return -1;
+            ProcessGuard.Register(process);
+
+            // Read header dump from stdout. With -L there may be multiple HTTP status lines
+            // (one per redirect hop); we want the last one (the final response).
+            string? lastStatusLine = null;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds + 2));
+            using var reader = new StreamReader(process.StandardOutput.BaseStream);
+            string? line;
+            while ((line = await reader.ReadLineAsync(cts.Token)) != null)
+            {
+                if (line.StartsWith("HTTP/"))
+                    lastStatusLine = line;
+            }
+
+            if (lastStatusLine == null) return -1;
+            var parts = lastStatusLine.Split(' ');
+            return parts.Length >= 2 && int.TryParse(parts[1], out int status) ? status : -1;
+        }
+        catch { return -1; }
+        finally
+        {
+            try { if (process != null && !process.HasExited) process.Kill(); } catch { }
+        }
+    }
+
     public void Shutdown() { }
 }
