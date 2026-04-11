@@ -20,6 +20,12 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
     private Task? _listenTask;
     public int Port { get; private set; }
 
+    // Directories that were requested before the port was bound; flushed in Start().
+    private readonly List<string> _pendingExportDirs = new();
+    // All ipc_port.dat paths written by this instance, for cleanup on shutdown.
+    private readonly List<string> _exportedPaths = new();
+    private readonly object _exportLock = new();
+
     public event Func<ResolvePayload, Task<string?>>? OnResolveRequested;
 
     public Task InitializeAsync(IModuleContext context)
@@ -58,18 +64,66 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
         }
         
         try {
-            var targets = new List<string> { Path.Combine(baseDir, "ipc_port.dat") };
             string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy");
             if (!Directory.Exists(appData)) Directory.CreateDirectory(appData);
-            targets.Add(Path.Combine(appData, "ipc_port.dat"));
 
-            foreach (var path in targets)
-            {
-                File.WriteAllText(path, Port.ToString());
-                _logger?.Debug("IPC port exported: " + path);
-            }
+            WritePortFile(baseDir);
+            WritePortFile(appData);
         } catch (Exception ex) {
             _logger?.Warning("Failed to export IPC port file — Redirector may not connect: " + ex.Message, ex);
+        }
+
+        // Flush directories that were queued before the port was bound
+        List<string> pending;
+        lock (_exportLock)
+        {
+            pending = new List<string>(_pendingExportDirs);
+            _pendingExportDirs.Clear();
+        }
+        foreach (var dir in pending) WritePortFile(dir);
+    }
+
+    /// <summary>
+    /// Exports ipc_port.dat to an additional directory (e.g. VRChat Tools folder).
+    /// Safe to call before the port is bound — the write will be deferred and flushed
+    /// automatically once the server starts.
+    /// </summary>
+    public void ExportPortToDirectory(string dir)
+    {
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+        {
+            _logger?.Warning($"IPC port export requested for non-existent directory: {dir}");
+            return;
+        }
+
+        lock (_exportLock)
+        {
+            if (Port == 0)
+            {
+                if (!_pendingExportDirs.Contains(dir))
+                {
+                    _pendingExportDirs.Add(dir);
+                    _logger?.Debug($"IPC port export queued (server not yet bound): {dir}");
+                }
+                return;
+            }
+        }
+
+        WritePortFile(dir);
+    }
+
+    private void WritePortFile(string dir)
+    {
+        try
+        {
+            string path = Path.Combine(dir, "ipc_port.dat");
+            File.WriteAllText(path, Port.ToString());
+            lock (_exportLock) { if (!_exportedPaths.Contains(path)) _exportedPaths.Add(path); }
+            _logger?.Debug("IPC port exported: " + path);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Warning($"Failed to write ipc_port.dat to {dir}: {ex.Message}");
         }
     }
 
@@ -189,14 +243,14 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
             _listener?.Close();
         } catch { }
 
-        // Cleanup port files
-        try {
-            string localPort = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ipc_port.dat");
-            if (File.Exists(localPort)) File.Delete(localPort);
-            
-            string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "ipc_port.dat");
-            if (File.Exists(appData)) File.Delete(appData);
-        } catch { }
+        // Cleanup all exported port files (standard paths + any extra directories like VRChat Tools)
+        List<string> toDelete;
+        lock (_exportLock) { toDelete = new List<string>(_exportedPaths); }
+        foreach (var path in toDelete)
+        {
+            try { if (File.Exists(path)) File.Delete(path); }
+            catch { }
+        }
     }
 
     public void Dispose()

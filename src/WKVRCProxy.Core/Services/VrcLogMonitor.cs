@@ -139,7 +139,6 @@ public class VrcLogMonitor : IProxyModule, IDisposable
     private void ForwardVrcLogLines(string content)
     {
         if (_logger == null) return;
-        bool debugMode = _settings?.Config.DebugMode ?? false;
 
         foreach (string rawLine in content.Split('\n'))
         {
@@ -147,8 +146,8 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             if (string.IsNullOrEmpty(line)) continue;
 
             // Only forward lines directly relevant to video/proxy operation.
-            // Broad "error" matching generates too much noise from VRChat internals
-            // (avatar 404s, API model failures, SteamVR, StyleEngine, etc).
+            // VRChat-internal lines (SteamVR, PhysBone, StyleEngine, API errors, etc.)
+            // are intentionally excluded to keep the proxy log clean.
             bool isVideoRelevant = line.IndexOf("yt-dlp", StringComparison.OrdinalIgnoreCase) >= 0
                                 || line.IndexOf("avpro", StringComparison.OrdinalIgnoreCase) >= 0
                                 || line.IndexOf("videoplayer", StringComparison.OrdinalIgnoreCase) >= 0
@@ -156,15 +155,9 @@ public class VrcLogMonitor : IProxyModule, IDisposable
                                 || line.Contains("[VRC.SDK3.Video]")
                                 || line.Contains("[VRC.SDK2.Video]");
 
-            bool isStructured = line.StartsWith("20") && (line.Contains(" Log    ") || line.Contains(" Error  ") || line.Contains(" Warning"));
-
             if (isVideoRelevant)
             {
                 _logger.LogWithSource(LogLevel.Debug, "VRChat", line);
-            }
-            else if (debugMode && isStructured)
-            {
-                _logger.LogWithSource(LogLevel.Trace, "VRChat", line);
             }
         }
     }

@@ -123,7 +123,10 @@ class Program
 
         var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient);
         ipcServer.OnResolveRequested += async (payload) => await resEngine.ResolveAsync(payload);
-        logMonitor.OnVrcPathDetected += (path) => patcherService.UpdateToolsDir(path);
+        logMonitor.OnVrcPathDetected += (path) => {
+            patcherService.UpdateToolsDir(path);
+            ipcServer.ExportPortToDirectory(path);
+        };
         
         resEngine.OnStatusUpdate += (msg, stats) => {
             if (_isWindowReady) {
@@ -163,6 +166,11 @@ class Program
                 try {
                     RunPreflightChecks(baseDir);
                     await _coordinator.InitializeAllAsync();
+                    // If VRChat Tools path was already known at startup, export the IPC port
+                    // there immediately so the redirector can find it without needing a log event.
+                    string? knownToolsDir = patcherService.VrcToolsDir;
+                    if (!string.IsNullOrEmpty(knownToolsDir))
+                        ipcServer.ExportPortToDirectory(knownToolsDir);
                     if (_settings.Config.AutoPatchOnStart) {
                         string wrapperPath = Path.Combine(baseDir, "tools", "redirector.exe");
                         if (File.Exists(wrapperPath)) patcherService.StartMonitoring(wrapperPath);

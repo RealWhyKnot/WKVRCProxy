@@ -15,7 +15,9 @@ class Program
 {
     static async Task<int> Main(string[] args)
     {
-        string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "yt-dlp-wrapper.log");
+        string appDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy");
+        try { Directory.CreateDirectory(appDataDir); } catch { }
+        string logPath = Path.Combine(appDataDir, "yt-dlp-wrapper.log");
         
         try
         {
