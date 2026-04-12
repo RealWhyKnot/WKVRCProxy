@@ -216,7 +216,9 @@ public class RelayServer : IProxyModule, IDisposable
             string targetUrl = Encoding.UTF8.GetString(Convert.FromBase64String(targetBase64));
 
             var ctx = RequestContext.Create(targetUrl);
-            _logger?.Debug("[" + ctx.CorrelationId + "] Relaying request: " + context.Request.HttpMethod + " -> " + targetUrl);
+            // Truncate URLs in logs to keep them readable
+            string shortUrl = targetUrl.Length > 120 ? targetUrl.Substring(0, 120) + "..." : targetUrl;
+            _logger?.Debug("[" + ctx.CorrelationId + "] Relaying: " + context.Request.HttpMethod + " " + shortUrl);
 
             var relayEvent = new RelayEvent {
                 TargetUrl = targetUrl,
@@ -387,7 +389,22 @@ public class RelayServer : IProxyModule, IDisposable
             {
                 response = await _httpClient.SendAsync(outboundRequest, HttpCompletionOption.ResponseHeadersRead, _cts.Token);
 
-                context.Response.StatusCode = (int)response.StatusCode;
+                int upstreamStatus = (int)response.StatusCode;
+                context.Response.StatusCode = upstreamStatus;
+                _logger?.Debug("[" + ctx.CorrelationId + "] Upstream responded: " + upstreamStatus + (isHls ? " (HLS)" : ""));
+
+                // If upstream returned an error, pass it through without HLS rewriting
+                if (upstreamStatus >= 400)
+                {
+                    _logger?.Warning("[" + ctx.CorrelationId + "] Upstream error " + upstreamStatus + " for " + shortUrl);
+                    string errorBody = await response.Content.ReadAsStringAsync();
+                    byte[] errorBytes = Encoding.UTF8.GetBytes(errorBody);
+                    context.Response.ContentLength64 = errorBytes.Length;
+                    await context.Response.OutputStream.WriteAsync(errorBytes, 0, errorBytes.Length, _cts.Token);
+                    relayEvent.StatusCode = upstreamStatus;
+                    OnRelayEvent?.Invoke(relayEvent);
+                    return;
+                }
 
                 foreach (var header in response.Headers.Concat(response.Content.Headers))
                 {
@@ -417,6 +434,7 @@ public class RelayServer : IProxyModule, IDisposable
                 if (isHls)
                 {
                     string rawManifest = await response.Content.ReadAsStringAsync();
+                    _logger?.Debug("[" + ctx.CorrelationId + "] HLS manifest (" + rawManifest.Length + " chars, " + rawManifest.Split('\n').Length + " lines)");
                     string rewritten = RewriteHlsManifest(rawManifest, targetUrl, _portManager!.CurrentPort);
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
