@@ -221,42 +221,20 @@ public class ResolutionEngine
 
         if (_settings.Config.EnableRelayBypass && _hostsManager.IsBypassActive() && !string.IsNullOrEmpty(result) && result != "FAILED")
         {
-            // Only wrap URLs through the relay if they're from domains that VRChat blocks
-            // (YouTube/Google CDN). Other domains (SoundCloud, Discord, etc.) work fine
-            // when accessed directly and wrapping them through the relay breaks HLS playback.
-            bool needsRelay = false;
             try
             {
-                var resolvedUri = new Uri(result);
-                string host = resolvedUri.Host.ToLowerInvariant();
-                needsRelay = host.Contains("youtube.com")
-                          || host.Contains("googlevideo.com")
-                          || host.Contains("ytimg.com")
-                          || host.Contains("google.com");
-            }
-            catch { needsRelay = false; }
-
-            if (needsRelay)
-            {
-                try
+                string encodedUrl = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(result));
+                int port = _relayPortManager.CurrentPort;
+                if (port > 0)
                 {
-                    string encodedUrl = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(result));
-                    int port = _relayPortManager.CurrentPort;
-                    if (port > 0)
-                    {
-                        string relayUrl = "http://localhost.youtube.com:" + port + "/play?target=" + WebUtility.UrlEncode(encodedUrl);
-                        result = relayUrl;
-                        _logger.Info("[" + ctx.CorrelationId + "] URL wrapped for localhost relay proxy bypass.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning("[" + ctx.CorrelationId + "] Failed to wrap URL for relay: " + ex.Message);
+                    string relayUrl = "http://localhost.youtube.com:" + port + "/play?target=" + WebUtility.UrlEncode(encodedUrl);
+                    result = relayUrl;
+                    _logger.Info("[" + ctx.CorrelationId + "] URL wrapped for localhost relay proxy bypass.");
                 }
             }
-            else
+            catch (Exception ex)
             {
-                _logger.Info("[" + ctx.CorrelationId + "] Non-YouTube URL, returning directly (no relay needed).");
+                _logger.Warning("[" + ctx.CorrelationId + "] Failed to wrap URL for relay: " + ex.Message);
             }
         }
 

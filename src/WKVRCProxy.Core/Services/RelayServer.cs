@@ -434,8 +434,9 @@ public class RelayServer : IProxyModule, IDisposable
                 if (isHls)
                 {
                     string rawManifest = await response.Content.ReadAsStringAsync();
-                    _logger?.Debug("[" + ctx.CorrelationId + "] HLS manifest (" + rawManifest.Length + " chars, " + rawManifest.Split('\n').Length + " lines)");
+                    _logger?.Debug("[" + ctx.CorrelationId + "] HLS raw manifest (" + rawManifest.Length + " chars, " + rawManifest.Split('\n').Length + " lines):\n" + rawManifest);
                     string rewritten = RewriteHlsManifest(rawManifest, targetUrl, _portManager!.CurrentPort);
+                    _logger?.Debug("[" + ctx.CorrelationId + "] HLS rewritten manifest (" + rewritten.Length + " chars):\n" + rewritten);
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
                     try { context.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
