@@ -15,36 +15,35 @@ class Program
 {
     static async Task<int> Main(string[] args)
     {
-        string appDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy");
-        try { Directory.CreateDirectory(appDataDir); } catch { }
-        string logPath = Path.Combine(appDataDir, "yt-dlp-wrapper.log");
-        
+        // Log to the same directory as the executable (VRChat Tools) — this is the
+        // only location guaranteed to be writable when running as a VRChat child process.
+        string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+        string logPath = Path.Combine(exeDir, "yt-dlp-wrapper.log");
+
         try
         {
-            File.AppendAllText(logPath, "[" + DateTime.Now.ToString("s") + "] Invoked with args: " + string.Join(" | ", args) + "\n");
+            AppendLog(logPath, "Invoked with args: " + string.Join(" | ", args));
 
-            // First look for local link file (portable mode)
-            string portFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ipc_port.dat");
-            
-            // If not found, look in the AppData folder where Core might have placed it
+            // Look for port file: first in our own directory (VRChat Tools), then in AppData
+            string portFile = Path.Combine(exeDir, "ipc_port.dat");
+
             if (!File.Exists(portFile))
             {
                 string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy");
                 portFile = Path.Combine(appData, "ipc_port.dat");
             }
 
-            if (!File.Exists(portFile)) throw new Exception("Link file missing.");
+            if (!File.Exists(portFile))
+            {
+                AppendLog(logPath, "FAIL: ipc_port.dat not found in Tools or AppData — proxy not running?");
+                return Fallback(args);
+            }
 
             string portStr = File.ReadAllText(portFile).Trim();
-            if (!int.TryParse(portStr, out int port)) throw new Exception("Link data corrupted.");
-
-            string relayPortFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "relay_port.dat");
-            int relayPort = 0;
-            if (File.Exists(relayPortFile)) {
-                try {
-                    string rpStr = File.ReadAllText(relayPortFile).Trim();
-                    int.TryParse(rpStr, out relayPort);
-                } catch { } // Don't crash redirector if missing or locked
+            if (!int.TryParse(portStr, out int port))
+            {
+                AppendLog(logPath, "FAIL: ipc_port.dat corrupted (content: " + portStr + ")");
+                return Fallback(args);
             }
 
             var payload = new ResolvePayload { Args = args };
@@ -59,8 +58,17 @@ class Program
             using var ws = new ClientWebSocket();
             var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
-            await ws.ConnectAsync(new Uri("ws://127.0.0.1:" + port + "/"), cts.Token);
-            File.AppendAllText(logPath, "[" + DateTime.Now.ToString("s") + "] Connected to IPC on port " + port + "\n");
+            try
+            {
+                await ws.ConnectAsync(new Uri("ws://127.0.0.1:" + port + "/"), cts.Token);
+            }
+            catch (Exception ex)
+            {
+                AppendLog(logPath, "FAIL: Could not connect to IPC on port " + port + " (" + ex.GetType().Name + ": " + ex.Message + ")");
+                return Fallback(args);
+            }
+
+            AppendLog(logPath, "Connected to IPC on port " + port);
 
             var sendBytes = Encoding.UTF8.GetBytes(json);
             await ws.SendAsync(new ArraySegment<byte>(sendBytes), WebSocketMessageType.Text, true, cts.Token);
@@ -79,23 +87,35 @@ class Program
             if (!string.IsNullOrEmpty(responseBase64))
             {
                 string finalUrl = Encoding.UTF8.GetString(Convert.FromBase64String(responseBase64));
-                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("s") + "] Resolved: " + finalUrl.Substring(0, Math.Min(100, finalUrl.Length)) + "\n");
+                AppendLog(logPath, "Resolved: " + finalUrl.Substring(0, Math.Min(100, finalUrl.Length)));
                 WriteToStdout(finalUrl);
                 return 0;
             }
 
-            throw new Exception("Core returned no data.");
+            AppendLog(logPath, "FAIL: IPC returned empty response");
+            return Fallback(args);
         }
         catch (Exception ex)
         {
-            try {
-                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("s") + "] Link Failure: " + ex.Message + "\n");
-            } catch { }
-
-            string? url = args.FirstOrDefault(a => a.StartsWith("http"));
-            if (url != null) WriteToStdout(url);
-            return 0;
+            AppendLog(logPath, "FAIL: " + ex.GetType().Name + ": " + ex.Message);
+            return Fallback(args);
         }
+    }
+
+    private static int Fallback(string[] args)
+    {
+        string? url = args.FirstOrDefault(a => a.StartsWith("http"));
+        if (url != null) WriteToStdout(url);
+        return 0;
+    }
+
+    private static void AppendLog(string path, string message)
+    {
+        try
+        {
+            File.AppendAllText(path, "[" + DateTime.Now.ToString("s") + "] " + message + "\n");
+        }
+        catch { /* Can't log — don't crash */ }
     }
 
     private static void WriteToStdout(string result)

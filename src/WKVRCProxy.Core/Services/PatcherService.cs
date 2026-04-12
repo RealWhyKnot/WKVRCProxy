@@ -116,6 +116,8 @@ public class PatcherService : IProxyModule, IDisposable
                 if (name.Equals("yt-dlp.exe", StringComparison.OrdinalIgnoreCase)) continue;
                 if (name.Equals("yt-dlp-og.exe", StringComparison.OrdinalIgnoreCase)) continue;
                 if (name.Equals("relay_port.dat", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.Equals("ipc_port.dat", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.Equals("yt-dlp-wrapper.log", StringComparison.OrdinalIgnoreCase)) continue;
                 junk.Add(f);
             }
             foreach (var d in Directory.GetDirectories(_vrcToolsDir))

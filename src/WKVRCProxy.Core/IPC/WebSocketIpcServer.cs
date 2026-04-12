@@ -247,11 +247,18 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
             _listener?.Close();
         } catch { }
 
-        // Cleanup all exported port files (standard paths + any extra directories like VRChat Tools)
+        // Cleanup exported port files from the app directory and VRChat Tools.
+        // Keep the %LOCALAPPDATA% copy so the Redirector can detect "proxy not running"
+        // vs "port file missing" on the next session — a stale port fails fast with
+        // connection refused, while a missing port file gives no diagnostic info.
+        string appDataPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "WKVRCProxy", "ipc_port.dat");
         List<string> toDelete;
         lock (_exportLock) { toDelete = new List<string>(_exportedPaths); }
         foreach (var path in toDelete)
         {
+            if (path.Equals(appDataPath, StringComparison.OrdinalIgnoreCase)) continue;
             try { if (File.Exists(path)) File.Delete(path); }
             catch { }
         }

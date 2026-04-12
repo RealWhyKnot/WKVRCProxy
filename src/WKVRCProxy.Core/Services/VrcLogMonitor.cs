@@ -129,32 +129,42 @@ public class VrcLogMonitor : IProxyModule, IDisposable
         }
     }
 
-    // Tail the Redirector's log file so child process connection failures
-    // are visible in the main logger instead of siloed in a separate file.
+    // Tail the Redirector's yt-dlp-wrapper.log from the VRChat Tools directory
+    // so connection failures and resolution results are visible in the main logger.
     private async Task TailRedirectorLog()
     {
-        string logPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "WKVRCProxy", "yt-dlp-wrapper.log");
+        string? logPath = null;
         long lastSize = 0;
-
-        // Start from current end so we don't replay old entries on app restart
-        if (File.Exists(logPath))
-        {
-            try { lastSize = new FileInfo(logPath).Length; } catch { }
-        }
 
         while (!_cts.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(2000, _cts.Token);
-                if (!File.Exists(logPath)) continue;
+
+                // Discover the log path from the VRChat Tools directory (where the Redirector writes)
+                if (logPath == null || !File.Exists(logPath))
+                {
+                    string vrcDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "Low", "VRChat", "VRChat", "Tools");
+                    string candidate = Path.Combine(vrcDir, "yt-dlp-wrapper.log");
+                    if (File.Exists(candidate))
+                    {
+                        if (logPath != candidate)
+                        {
+                            logPath = candidate;
+                            // Start from current end so we don't replay old entries
+                            try { lastSize = new FileInfo(logPath).Length; } catch { lastSize = 0; }
+                        }
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
 
                 long currentSize = new FileInfo(logPath).Length;
                 if (currentSize <= lastSize)
                 {
-                    // File was truncated or unchanged
                     if (currentSize < lastSize) lastSize = 0;
                     continue;
                 }
@@ -169,7 +179,10 @@ public class VrcLogMonitor : IProxyModule, IDisposable
                 {
                     string line = rawLine.Trim();
                     if (string.IsNullOrEmpty(line)) continue;
-                    _logger?.LogWithSource(LogLevel.Debug, "Redirector", line);
+
+                    // Failures get Warning level so they're clearly visible
+                    LogLevel level = line.Contains("FAIL:") ? LogLevel.Warning : LogLevel.Info;
+                    _logger?.LogWithSource(level, "Redirector", line);
                 }
             }
             catch (OperationCanceledException) { break; }
