@@ -220,7 +220,12 @@ public class RelayServer : IProxyModule, IDisposable
             var ctx = RequestContext.Create(targetUrl);
             // Truncate URLs in logs to keep them readable
             string shortUrl = targetUrl.Length > 120 ? targetUrl.Substring(0, 120) + "..." : targetUrl;
-            _logger?.Debug("[" + ctx.CorrelationId + "] Relaying: " + context.Request.HttpMethod + " " + shortUrl);
+
+            // Only log manifest/page requests, not per-segment binary relays (30+ per video = noise)
+            bool isPageRequest = targetUrl.Contains(".m3u8") || targetUrl.Contains("m3u8")
+                              || targetUrl.Contains("videoplayback") || targetUrl.Contains("/api/proxy");
+            if (isPageRequest)
+                _logger?.Info("[" + ctx.CorrelationId + "] Relaying: " + shortUrl);
 
             var relayEvent = new RelayEvent {
                 TargetUrl = targetUrl,
@@ -393,7 +398,8 @@ public class RelayServer : IProxyModule, IDisposable
 
                 int upstreamStatus = (int)response.StatusCode;
                 context.Response.StatusCode = upstreamStatus;
-                _logger?.Debug("[" + ctx.CorrelationId + "] Upstream responded: " + upstreamStatus + (isHls ? " (HLS)" : ""));
+                if (isPageRequest)
+                    _logger?.Debug("[" + ctx.CorrelationId + "] Upstream responded: " + upstreamStatus + (isHls ? " (HLS)" : ""));
 
                 // If upstream returned an error, pass it through without HLS rewriting
                 if (upstreamStatus >= 400)

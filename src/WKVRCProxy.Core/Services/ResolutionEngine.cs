@@ -87,11 +87,17 @@ public class ResolutionEngine
     // Falls back to plain HttpClient if curl-impersonate is unavailable.
     private async Task<bool> CheckUrlReachable(string url, RequestContext ctx)
     {
+        string shortUrl = url.Length > 100 ? url.Substring(0, 100) + "..." : url;
+
         if (_curlClient?.IsAvailable == true)
         {
             int status = await _curlClient.CheckReachabilityAsync(url, _reachabilityHeaders);
-            // 206 Partial Content, 200 OK (range ignored), 416 Range Not Satisfiable (URL exists)
-            return status is (>= 200 and < 400) or 416;
+            bool reachable = status is (>= 200 and < 400) or 416;
+            if (!reachable)
+                _logger.Warning("[" + ctx.CorrelationId + "] Reachability check failed: curl-impersonate returned " + status + " for " + shortUrl);
+            else
+                _logger.Debug("[" + ctx.CorrelationId + "] Reachability check passed: " + status + " for " + shortUrl);
+            return reachable;
         }
 
         // Fallback: plain HttpClient with yt-dlp-matching headers
@@ -104,11 +110,16 @@ public class ResolutionEngine
             req.Headers.TryAddWithoutValidation("Accept-Language", "en-us,en;q=0.5");
             var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             int status = (int)resp.StatusCode;
-            return status < 400 || status == 416;
+            bool reachable = status < 400 || status == 416;
+            if (!reachable)
+                _logger.Warning("[" + ctx.CorrelationId + "] Reachability check failed: HttpClient returned " + status + " for " + shortUrl);
+            else
+                _logger.Debug("[" + ctx.CorrelationId + "] Reachability check passed: " + status + " for " + shortUrl);
+            return reachable;
         }
         catch (Exception ex)
         {
-            _logger.Debug("[" + ctx.CorrelationId + "] HttpClient reachability check failed for " + url + ": " + ex.Message);
+            _logger.Warning("[" + ctx.CorrelationId + "] Reachability check error: " + ex.GetType().Name + " for " + shortUrl + " — " + ex.Message);
             return false;
         }
     }
