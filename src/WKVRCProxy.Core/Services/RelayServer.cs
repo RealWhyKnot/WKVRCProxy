@@ -33,7 +33,9 @@ public class RelayServer : IProxyModule, IDisposable
     private CurlImpersonateClient? _curlClient;
     private PotProviderService? _potProvider;
     private SystemEventBus? _eventBus;
-    private readonly HttpClient _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly HttpClient _httpClient = new HttpClient(
+        new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All }
+    ) { Timeout = Timeout.InfiniteTimeSpan };
 
     public Task InitializeAsync(IModuleContext context)
     {
@@ -434,9 +436,12 @@ public class RelayServer : IProxyModule, IDisposable
                 if (isHls)
                 {
                     string rawManifest = await response.Content.ReadAsStringAsync();
-                    _logger?.Debug("[" + ctx.CorrelationId + "] HLS raw manifest (" + rawManifest.Length + " chars, " + rawManifest.Split('\n').Length + " lines):\n" + rawManifest);
+                    bool looksValid = rawManifest.TrimStart().StartsWith("#EXTM3U");
+                    int lineCount = rawManifest.Split('\n').Length;
+                    _logger?.Debug("[" + ctx.CorrelationId + "] HLS manifest: " + rawManifest.Length + " chars, " + lineCount + " lines, valid=" + looksValid);
+                    if (!looksValid)
+                        _logger?.Warning("[" + ctx.CorrelationId + "] HLS manifest does not start with #EXTM3U — may be compressed or corrupt (first 100 bytes: " + rawManifest.Substring(0, Math.Min(100, rawManifest.Length)) + ")");
                     string rewritten = RewriteHlsManifest(rawManifest, targetUrl, _portManager!.CurrentPort);
-                    _logger?.Debug("[" + ctx.CorrelationId + "] HLS rewritten manifest (" + rewritten.Length + " chars):\n" + rewritten);
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
                     try { context.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
