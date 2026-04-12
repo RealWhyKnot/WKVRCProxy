@@ -53,10 +53,9 @@ public class VrcLogMonitor : IProxyModule, IDisposable
                 }
 
                 string localTools = Path.Combine(vrcDir, "Tools");
-                if (Directory.Exists(localTools))
+                if (Directory.Exists(localTools) && !_vrcToolsDetected)
                 {
-                    if (_vrcToolsDetected == false)
-                        _vrcToolsDetected = true;
+                    _vrcToolsDetected = true;
                     OnVrcPathDetected?.Invoke(localTools);
                 }
                 
@@ -187,19 +186,26 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             string line = rawLine.Trim();
             if (string.IsNullOrEmpty(line)) continue;
 
-            // Only forward lines directly relevant to video/proxy operation.
-            // VRChat-internal lines (SteamVR, PhysBone, StyleEngine, API errors, etc.)
-            // are intentionally excluded to keep the proxy log clean.
-            bool isVideoRelevant = line.IndexOf("yt-dlp", StringComparison.OrdinalIgnoreCase) >= 0
-                                || line.IndexOf("avpro", StringComparison.OrdinalIgnoreCase) >= 0
-                                || line.IndexOf("videoplayer", StringComparison.OrdinalIgnoreCase) >= 0
-                                || line.IndexOf("video component", StringComparison.OrdinalIgnoreCase) >= 0
-                                || line.Contains("[VRC.SDK3.Video]")
-                                || line.Contains("[VRC.SDK2.Video]");
+            // Only forward lines that directly help diagnose video resolution issues.
+            // Excluded: AVPro init spam, VideoTXL play/stop/loop events, player registrations,
+            // "No MediaReference" errors, JSON stats blobs, MovieCapture init, etc.
+            bool isRelevant = line.Contains("NativeProcess.Start:")
+                           || line.Contains("NativeProcess.HasExited:")
+                           || line.Contains("loading URL by user")
+                           || line.Contains("Load Url:")
+                           || line.Contains("Now Playing:")
+                           || line.Contains("[AVProVideo] Error:")
+                           || line.Contains("[AVProVideo] Opening ")
+                           || line.Contains("[VRC.SDK3.Video]")
+                           || line.Contains("[VRC.SDK2.Video]");
 
-            if (isVideoRelevant)
+            // Exclude known noise that matches the above patterns
+            if (line.Contains("No MediaReference") || line.Contains("No file path specified"))
+                isRelevant = false;
+
+            if (isRelevant)
             {
-                _logger.LogWithSource(LogLevel.Debug, "VRChat", line);
+                _logger.LogWithSource(LogLevel.Info, "VRChat", line);
             }
         }
     }

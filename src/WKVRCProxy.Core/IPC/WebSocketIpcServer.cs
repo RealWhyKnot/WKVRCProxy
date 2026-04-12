@@ -97,10 +97,7 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
             if (Port == 0)
             {
                 if (!_pendingExportDirs.Contains(dir))
-                {
                     _pendingExportDirs.Add(dir);
-                    _logger?.Debug($"IPC port export queued (server not yet bound): {dir}");
-                }
                 return;
             }
         }
@@ -115,7 +112,6 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
             string path = Path.Combine(dir, "ipc_port.dat");
             File.WriteAllText(path, Port.ToString());
             lock (_exportLock) { if (!_exportedPaths.Contains(path)) _exportedPaths.Add(path); }
-            _logger?.Debug("IPC port exported: " + path);
         }
         catch (Exception ex)
         {
