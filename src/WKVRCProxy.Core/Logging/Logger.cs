@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 
 namespace WKVRCProxy.Core.Logging;
 
@@ -33,6 +34,7 @@ public class Logger : IDisposable
     private readonly string _logFile;
     private readonly SettingsManager _settings;
     private readonly string _source;
+    private SystemEventBus? _eventBus;
 
     private readonly BlockingCollection<QueueItem> _queue = new();
     private readonly CancellationTokenSource _cts = new();
@@ -96,6 +98,8 @@ public class Logger : IDisposable
         _writerTask = Task.Run(ProcessQueue);
     }
 
+    public void SetEventBus(SystemEventBus bus) { _eventBus = bus; }
+
     private async Task ProcessQueue()
     {
         while (!_cts.IsCancellationRequested)
@@ -144,6 +148,7 @@ public class Logger : IDisposable
                 while (_history.Count > 1000) _history.TryDequeue(out _);
 
                 OnLog?.Invoke(entry);
+                _eventBus?.PublishLog(entry);
             }
             catch (OperationCanceledException) { break; }
             catch
@@ -157,9 +162,6 @@ public class Logger : IDisposable
 
     public void Log(LogLevel level, string message, Exception? ex = null)
     {
-        if (!_settings.Config.DebugMode && (level == LogLevel.Trace || level == LogLevel.Debug))
-            return;
-
         var entry = new LogEntry
         {
             Timestamp = DateTime.Now,
@@ -174,9 +176,6 @@ public class Logger : IDisposable
 
     public void LogWithSource(LogLevel level, string source, string message)
     {
-        if (!_settings.Config.DebugMode && (level == LogLevel.Trace || level == LogLevel.Debug))
-            return;
-
         var entry = new LogEntry { Timestamp = DateTime.Now, Level = level, Message = message, Source = source };
         if (!_queue.IsAddingCompleted)
             _queue.Add(new QueueItem { Entry = entry });

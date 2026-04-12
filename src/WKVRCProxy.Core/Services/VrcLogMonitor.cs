@@ -15,6 +15,7 @@ public class VrcLogMonitor : IProxyModule, IDisposable
     private SettingsManager? _settings;
     private readonly CancellationTokenSource _cts = new();
     private Task? _monitorTask;
+    private Task? _redirectorLogTask;
     private bool _vrcToolsDetected = false;
 
     public string CurrentPlayer { get; private set; } = "AVPro";
@@ -24,22 +25,20 @@ public class VrcLogMonitor : IProxyModule, IDisposable
     {
         _logger = context.Logger;
         _settings = context.Settings;
-        _logger.Trace("Initializing VrcLogMonitor...");
         _logger.Info("Starting VRChat Log Monitor...");
         _monitorTask = Task.Run(MonitorLoop);
+        _redirectorLogTask = Task.Run(TailRedirectorLog);
         return Task.CompletedTask;
     }
 
     public void Shutdown()
     {
-        _logger?.Trace("Shutting down VrcLogMonitor...");
         _cts.Cancel();
     }
     
     private async Task MonitorLoop()
     {
         string vrcDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "Low", "VRChat", "VRChat");
-        _logger?.Trace("Monitoring VRChat logs at: " + vrcDir);
         string currentFile = "";
         long lastSize = 0;
         
@@ -49,19 +48,15 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             {
                 if (!Directory.Exists(vrcDir))
                 {
-                    _logger?.Trace("VRChat directory not found, retrying in 5s...");
                     await Task.Delay(5000, _cts.Token);
                     continue;
                 }
 
                 string localTools = Path.Combine(vrcDir, "Tools");
-                if (Directory.Exists(localTools)) 
+                if (Directory.Exists(localTools))
                 {
                     if (_vrcToolsDetected == false)
-                    {
-                        _logger?.Trace("Local Tools folder detected: " + localTools);
                         _vrcToolsDetected = true;
-                    }
                     OnVrcPathDetected?.Invoke(localTools);
                 }
                 
@@ -81,7 +76,6 @@ public class VrcLogMonitor : IProxyModule, IDisposable
                     
                     if (latestLog.Length > lastSize)
                     {
-                        _logger?.Trace("Reading " + (latestLog.Length - lastSize) + " new bytes from log...");
                         using (var fs = new FileStream(currentFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                         {
                             fs.Seek(lastSize, SeekOrigin.Begin);
@@ -96,7 +90,7 @@ public class VrcLogMonitor : IProxyModule, IDisposable
                                     if (match.Success)
                                     {
                                         string exePath = match.Groups[1].Value.Trim();
-                                        _logger?.Trace("VRChat Application Path detected: " + exePath);
+                                        _logger?.Debug("VRChat Application Path detected: " + exePath);
                                         string? toolsDir = DetectToolsFromExe(exePath);
                                         if (toolsDir != null) OnVrcPathDetected?.Invoke(toolsDir);
                                     }
@@ -130,9 +124,57 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                _logger?.Trace("VrcLogMonitor Error: " + ex.Message);
+                _logger?.Warning("VrcLogMonitor Error: " + ex.Message, ex);
                 await Task.Delay(5000, _cts.Token);
             }
+        }
+    }
+
+    // Tail the Redirector's log file so child process connection failures
+    // are visible in the main logger instead of siloed in a separate file.
+    private async Task TailRedirectorLog()
+    {
+        string logPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "WKVRCProxy", "yt-dlp-wrapper.log");
+        long lastSize = 0;
+
+        // Start from current end so we don't replay old entries on app restart
+        if (File.Exists(logPath))
+        {
+            try { lastSize = new FileInfo(logPath).Length; } catch { }
+        }
+
+        while (!_cts.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(2000, _cts.Token);
+                if (!File.Exists(logPath)) continue;
+
+                long currentSize = new FileInfo(logPath).Length;
+                if (currentSize <= lastSize)
+                {
+                    // File was truncated or unchanged
+                    if (currentSize < lastSize) lastSize = 0;
+                    continue;
+                }
+
+                using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                fs.Seek(lastSize, SeekOrigin.Begin);
+                using var reader = new StreamReader(fs);
+                string newContent = await reader.ReadToEndAsync();
+                lastSize = fs.Position;
+
+                foreach (string rawLine in newContent.Split('\n'))
+                {
+                    string line = rawLine.Trim();
+                    if (string.IsNullOrEmpty(line)) continue;
+                    _logger?.LogWithSource(LogLevel.Debug, "Redirector", line);
+                }
+            }
+            catch (OperationCanceledException) { break; }
+            catch { /* File locked or inaccessible — retry next cycle */ }
         }
     }
 
@@ -171,7 +213,7 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             string toolsDir = Path.Combine(root, "VRChat_Data", "StreamingAssets", "Tools");
             if (Directory.Exists(toolsDir)) return toolsDir;
         }
-        catch (Exception ex) { _logger?.Trace("Failed to detect Tools dir from exe path: " + ex.Message); }
+        catch (Exception ex) { _logger?.Debug("Failed to detect Tools dir from exe path: " + ex.Message); }
         return null;
     }
     
@@ -179,7 +221,7 @@ public class VrcLogMonitor : IProxyModule, IDisposable
     {
         _cts.Cancel();
         try { _monitorTask?.Wait(1000); }
-        catch (Exception ex) { _logger?.Trace("MonitorLoop did not exit cleanly on dispose: " + ex.Message); }
+        catch { /* Shutdown cleanup — failure is expected */ }
         _cts.Dispose();
     }
 }

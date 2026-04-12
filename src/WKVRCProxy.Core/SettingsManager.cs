@@ -70,7 +70,6 @@ public class SettingsManager
             {
                 string json = JsonSerializer.Serialize(_config, CoreJsonContext.Default.AppConfig);
                 File.WriteAllText(_filePath, json);
-                _logger?.Trace("Settings saved.");
             }
             catch (Exception ex)
             {

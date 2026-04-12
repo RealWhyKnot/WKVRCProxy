@@ -16,7 +16,6 @@ public class CodecInstaller : IProxyModule
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
-        _logger.Trace("Initializing CodecInstaller...");
         _ = RunOptimizationAsync();
         return Task.CompletedTask;
     }
@@ -26,11 +25,8 @@ public class CodecInstaller : IProxyModule
         _logger?.Info("Starting silent hardware codec optimization...");
         
         await Task.Run(() => {
-            _logger?.Trace("Checking for AV1 Video Extension...");
             TryInstallCodec("AV1 Video Extension", "9MVZQVXJBQ9V", "Microsoft.AV1VideoExtension");
-            _logger?.Trace("Checking for HEVC Video Extension...");
             TryInstallCodec("HEVC Video Extension", "9NMZLZ57R3T7", "Microsoft.HEVCVideoExtension");
-            _logger?.Trace("Checking for VP9 Video Extensions...");
             TryInstallCodec("VP9 Video Extensions", "9N4D0MSV0403", "Microsoft.VP9VideoExtensions");
         });
 
@@ -66,6 +62,8 @@ public class CodecInstaller : IProxyModule
             using var process = Process.Start(psi);
             if (process != null)
             {
+                string stdout = process.StandardOutput.ReadToEnd();
+                string stderr = process.StandardError.ReadToEnd();
                 process.WaitForExit(60000);
                 if (process.ExitCode == 0)
                 {
@@ -74,6 +72,10 @@ public class CodecInstaller : IProxyModule
                 else
                 {
                     _logger?.Warning(name + " installation returned exit code: " + process.ExitCode);
+                    if (!string.IsNullOrWhiteSpace(stderr))
+                        _logger?.Warning("[winget] " + stderr.Trim());
+                    else if (!string.IsNullOrWhiteSpace(stdout))
+                        _logger?.Debug("[winget] " + stdout.Trim());
                 }
             }
             else

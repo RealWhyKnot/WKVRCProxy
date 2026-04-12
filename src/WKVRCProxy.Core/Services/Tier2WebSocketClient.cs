@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.Services;
@@ -41,26 +42,23 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
-        _logger.Trace("Initializing Tier2WebSocketClient...");
         Task.Run(MaintainConnection);
         return Task.CompletedTask;
     }
 
     public void Shutdown()
     {
-        _logger?.Trace("Shutting down Tier2WebSocketClient...");
         _cts.Cancel();
         _webSocket?.Dispose();
     }
 
     private async Task MaintainConnection()
     {
-        _logger?.Trace("Starting MaintainConnection loop...");
         while (!_cts.IsCancellationRequested)
         {
             if (!IsConnected && !_isConnecting)
             {
-                _logger?.Trace("Tier 2 not connected, attempting to connect to best node...");
+                _logger?.Debug("Tier 2 not connected, attempting to connect to best node...");
                 await ConnectToBestNodeAsync();
             }
             await Task.Delay(10000, _cts.Token);
@@ -85,7 +83,7 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
                         return (Node: n, Latency: sw.ElapsedMilliseconds, Ok: true);
                     }
                 }
-                catch { }
+                catch (Exception ex) { _logger?.Debug("Node " + n.Id + " health check failed: " + ex.Message); }
                 return (Node: n, Latency: long.MaxValue, Ok: false);
             }));
 
@@ -129,7 +127,7 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
         }
         catch (Exception ex)
         {
-            _logger?.Trace("[Tier 2] Failed to establish WS to " + id + ": " + ex.Message);
+            _logger?.Warning("[Tier 2] Failed to establish WebSocket to " + id + ": " + ex.Message);
         }
     }
 
@@ -192,7 +190,7 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
                 OnRelayMessage?.Invoke(action, root);
             }
         }
-        catch { }
+        catch (Exception ex) { _logger?.Warning("[Tier 2] Failed to parse message from " + _activeNodeId + ": " + ex.Message); }
     }
 
     public async Task SendMessageAsync(object message)
@@ -262,6 +260,29 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
             _pendingRequests.TryRemove(requestId, out _);
             return null;
         }
+    }
+
+    public ModuleHealthReport GetHealthReport()
+    {
+        if (IsConnected)
+        {
+            return new ModuleHealthReport
+            {
+                ModuleName = Name,
+                Status = HealthStatus.Healthy,
+                Reason = "",
+                LastChecked = DateTime.Now
+            };
+        }
+        return new ModuleHealthReport
+        {
+            ModuleName = Name,
+            Status = HealthStatus.Degraded,
+            Reason = _isConnecting
+                ? "Connecting to cloud nodes..."
+                : "No cloud nodes reachable -- Tier 2 resolution unavailable",
+            LastChecked = DateTime.Now
+        };
     }
 
     public void Dispose()

@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.Services;
@@ -29,7 +30,6 @@ public class PotProviderService : IProxyModule, IDisposable
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
-        _logger.Trace("Initializing PO Token Provider...");
 
         try
         {
@@ -54,7 +54,38 @@ public class PotProviderService : IProxyModule, IDisposable
 
                 _providerProcess = Process.Start(psi);
                 ProcessGuard.Register(_providerProcess);
-                _logger.Trace("Started bgutil-ytdlp-pot-provider on port " + _port);
+                _logger.Debug("Started bgutil-ytdlp-pot-provider on port " + _port);
+
+                // Pipe stdout/stderr to logger so child process output is visible
+                if (_providerProcess != null)
+                {
+                    _ = Task.Run(async () => {
+                        try
+                        {
+                            using var reader = _providerProcess.StandardOutput;
+                            string? line;
+                            while ((line = await reader.ReadLineAsync()) != null)
+                            {
+                                if (!string.IsNullOrEmpty(line))
+                                    _logger?.Debug("[PotProvider] " + line);
+                            }
+                        }
+                        catch { /* Process exited or stream closed */ }
+                    });
+                    _ = Task.Run(async () => {
+                        try
+                        {
+                            using var reader = _providerProcess.StandardError;
+                            string? line;
+                            while ((line = await reader.ReadLineAsync()) != null)
+                            {
+                                if (!string.IsNullOrEmpty(line))
+                                    _logger?.Warning("[PotProvider] " + line);
+                            }
+                        }
+                        catch { /* Process exited or stream closed */ }
+                    });
+                }
             }
             else
             {
@@ -119,14 +150,52 @@ public class PotProviderService : IProxyModule, IDisposable
         return null;
     }
 
+    public ModuleHealthReport GetHealthReport()
+    {
+        if (_providerProcess != null && !_providerProcess.HasExited && _port > 0)
+        {
+            return new ModuleHealthReport
+            {
+                ModuleName = Name,
+                Status = HealthStatus.Healthy,
+                Reason = "",
+                LastChecked = DateTime.Now
+            };
+        }
+
+        bool binaryExists = File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "bgutil-ytdlp-pot-provider.exe"));
+        if (!binaryExists)
+        {
+            return new ModuleHealthReport
+            {
+                ModuleName = Name,
+                Status = HealthStatus.Degraded,
+                Reason = "bgutil-ytdlp-pot-provider.exe not found",
+                LastChecked = DateTime.Now
+            };
+        }
+
+        string reason = "PO Token provider process not running";
+        if (_providerProcess != null && _providerProcess.HasExited)
+            reason = "PO Token provider process crashed (exit code " + _providerProcess.ExitCode + ")";
+
+        return new ModuleHealthReport
+        {
+            ModuleName = Name,
+            Status = HealthStatus.Failed,
+            Reason = reason,
+            LastChecked = DateTime.Now
+        };
+    }
+
     public void Shutdown()
     {
         if (_providerProcess != null && !_providerProcess.HasExited)
         {
             try { _providerProcess.Kill(true); }
-            catch (Exception ex) { _logger?.Trace("Failed to kill bgutil-ytdlp-pot-provider: " + ex.Message); }
+            catch { /* Shutdown cleanup — failure is expected */ }
             try { _providerProcess.Dispose(); }
-            catch (Exception ex) { _logger?.Trace("Failed to dispose provider process: " + ex.Message); }
+            catch { /* Shutdown cleanup — failure is expected */ }
         }
     }
 

@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.IPC;
@@ -31,7 +32,6 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
-        _logger.Trace("Initializing WebSocketIpcServer...");
         // Non-blocking start
         Task.Run(() => Start(AppDomain.CurrentDomain.BaseDirectory));
         return Task.CompletedTask;
@@ -41,17 +41,13 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
     {
         try 
         {
-            _logger?.Trace("Starting IPC server thread...");
             Port = FindFreePort(22361, 22370);
-            
-            _logger?.Trace("Selected Port: " + Port);
+
             _logger?.Info("Starting WebSocket IPC Server on port: " + Port);
 
-            _logger?.Trace("Creating HttpListener...");
             _listener = new HttpListener();
             _listener.Prefixes.Add("http://127.0.0.1:" + Port + "/");
-            
-            _logger?.Trace("Starting HttpListener...");
+
             _listener.Start();
 
             _listenTask = Task.Run(ListenLoop);
@@ -155,11 +151,12 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
     private async Task HandleConnectionAsync(HttpListenerContext context)
     {
         WebSocket? webSocket = null;
+        string sessionId = Guid.NewGuid().ToString("N").Substring(0, 8);
         try
         {
             var wsContext = await context.AcceptWebSocketAsync(null);
             webSocket = wsContext.WebSocket;
-            _logger?.Trace("Redirector linked via WebSocket.");
+            _logger?.Debug("[" + sessionId + "] Redirector linked via WebSocket.");
 
             var buffer = new byte[1024 * 16]; 
             var ms = new MemoryStream();
@@ -183,7 +180,6 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
 
             if (payload != null && OnResolveRequested != null)
             {
-                _logger?.Trace("Payload deserialized, invoking resolution handler.");
                 string? resolved = await OnResolveRequested.Invoke(payload);
                 string response = string.IsNullOrEmpty(resolved) ? "" : Convert.ToBase64String(Encoding.UTF8.GetBytes(resolved));
 
@@ -192,7 +188,7 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
             }
             else
             {
-                _logger?.Warning("WebSocket request had null payload or no resolution handler registered — sending empty response.");
+                _logger?.Warning("[" + sessionId + "] WebSocket request had null payload or no resolution handler registered — sending empty response.");
                 var emptyBytes = Encoding.UTF8.GetBytes("");
                 await webSocket.SendAsync(new ArraySegment<byte>(emptyBytes), WebSocketMessageType.Text, true, _cts.Token);
             }
@@ -201,13 +197,13 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
             {
                 using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 try { await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", closeCts.Token); }
-                catch (Exception ex) { _logger?.Trace("WebSocket close handshake failed (expected on abrupt disconnect): " + ex.Message); }
+                catch { /* Close handshake failure is expected on abrupt disconnect */ }
             }
         }
         catch (Exception ex)
         {
             if (!(ex is WebSocketException || ex is OperationCanceledException))
-                _logger?.Error("WebSocket Session Error: " + ex.Message, ex);
+                _logger?.Error("[" + sessionId + "] WebSocket Session Error: " + ex.Message, ex);
         }
         finally
         {
@@ -217,7 +213,6 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
 
     private int FindFreePort(int start, int end)
     {
-        _logger?.Trace("Searching for free port in range " + start + "-" + end + "...");
         for (int port = start; port <= end; port++)
         {
             try {
@@ -226,13 +221,26 @@ public class WebSocketIpcServer : IProxyModule, IDisposable
                 var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, port);
                 listener.Start();
                 listener.Stop();
-                _logger?.Trace("Port " + port + " is available for binding.");
                 return port;
-            } catch { 
-                _logger?.Trace("Port " + port + " is busy or restricted.");
+            } catch {
             }
         }
         return start;
+    }
+
+    public ModuleHealthReport GetHealthReport()
+    {
+        return new ModuleHealthReport
+        {
+            ModuleName = Name,
+            Status = (_listener != null && _listener.IsListening && Port > 0)
+                ? HealthStatus.Healthy
+                : HealthStatus.Failed,
+            Reason = (_listener == null || Port == 0)
+                ? "IPC server failed to bind to any port in range 22361-22370"
+                : "",
+            LastChecked = DateTime.Now
+        };
     }
 
     public void Shutdown()

@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.Versioning;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.Services;
@@ -64,7 +65,7 @@ public class CurlImpersonateClient : IProxyModule
         if (process == null) throw new Exception("Failed to start curl-impersonate-win process.");
         ProcessGuard.Register(process);
 
-        _logger?.Trace("Spawned curl-impersonate process for: " + method + " " + url.Substring(0, Math.Min(80, url.Length)));
+        _logger?.Debug("Spawned curl-impersonate process for: " + method + " " + url.Substring(0, Math.Min(80, url.Length)));
 
         // Pipe stderr to logger asynchronously — wrapped in try/catch so I/O errors don't get silently dropped
         _ = Task.Run(async () => {
@@ -75,7 +76,7 @@ public class CurlImpersonateClient : IProxyModule
                 while ((line = await reader.ReadLineAsync()) != null)
                 {
                     if (!string.IsNullOrEmpty(line))
-                        _logger?.Trace("[CURL-WARN] " + line);
+                        _logger?.Warning("[CURL-WARN] " + line);
                 }
             }
             catch (Exception ex)
@@ -144,15 +145,34 @@ public class CurlImpersonateClient : IProxyModule
                     lastStatusLine = line;
             }
 
+            // Log non-zero exit codes for debugging
+            if (process != null && process.HasExited && process.ExitCode != 0)
+                _logger?.Debug("curl-impersonate exited with code " + process.ExitCode + " for " + url.Substring(0, Math.Min(80, url.Length)));
+
             if (lastStatusLine == null) return -1;
             var parts = lastStatusLine.Split(' ');
             return parts.Length >= 2 && int.TryParse(parts[1], out int status) ? status : -1;
         }
-        catch { return -1; }
+        catch (Exception ex)
+        {
+            _logger?.Debug("curl-impersonate reachability check failed for " + url.Substring(0, Math.Min(80, url.Length)) + ": " + ex.Message);
+            return -1;
+        }
         finally
         {
-            try { if (process != null && !process.HasExited) process.Kill(); } catch { }
+            try { if (process != null && !process.HasExited) process.Kill(); } catch { /* Process may have already exited */ }
         }
+    }
+
+    public ModuleHealthReport GetHealthReport()
+    {
+        return new ModuleHealthReport
+        {
+            ModuleName = Name,
+            Status = IsAvailable ? HealthStatus.Healthy : HealthStatus.Degraded,
+            Reason = IsAvailable ? "" : "curl-impersonate-win.exe not found -- TLS fingerprint spoofing unavailable",
+            LastChecked = DateTime.Now
+        };
     }
 
     public void Shutdown() { }

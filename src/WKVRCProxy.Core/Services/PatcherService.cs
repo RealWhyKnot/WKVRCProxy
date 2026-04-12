@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.Services;
@@ -29,14 +30,12 @@ public class PatcherService : IProxyModule, IDisposable
     {
         _context = context;
         _logger = context.Logger;
-        _logger.Trace("Initializing PatcherService...");
         DetectVrcPath();
         return Task.CompletedTask;
     }
 
     private void DetectVrcPath()
     {
-        _logger?.Trace("Starting VRChat path detection...");
         try
         {
             if (_context != null && !string.IsNullOrEmpty(_context.Settings.Config.CustomVrcPath))
@@ -49,12 +48,11 @@ public class PatcherService : IProxyModule, IDisposable
                 }
                 else
                 {
-                    _logger?.Trace("Custom VRChat path configured but does not exist: " + _context.Settings.Config.CustomVrcPath);
+                    _logger?.Warning("Custom VRChat path configured but does not exist: " + _context.Settings.Config.CustomVrcPath);
                 }
             }
 
             string localLow = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "Low", "VRChat", "VRChat", "Tools");
-            _logger?.Trace("Checking default path: " + localLow);
             if (Directory.Exists(localLow))
             {
                 _vrcToolsDir = localLow;
@@ -86,12 +84,12 @@ public class PatcherService : IProxyModule, IDisposable
             foreach (var f in Directory.GetFiles(_vrcToolsDir))
             {
                 try { File.Delete(f); }
-                catch (Exception ex) { _logger?.Trace("Failed to delete file during wipe (" + Path.GetFileName(f) + "): " + ex.Message); }
+                catch (Exception ex) { _logger?.Debug("Failed to delete file during wipe (" + Path.GetFileName(f) + "): " + ex.Message); }
             }
             foreach (var d in Directory.GetDirectories(_vrcToolsDir))
             {
                 try { Directory.Delete(d, true); }
-                catch (Exception ex) { _logger?.Trace("Failed to delete directory during wipe (" + Path.GetFileName(d) + "): " + ex.Message); }
+                catch (Exception ex) { _logger?.Debug("Failed to delete directory during wipe (" + Path.GetFileName(d) + "): " + ex.Message); }
             }
             _logger?.Success("Tools folder wiped.");
         }
@@ -142,7 +140,7 @@ public class PatcherService : IProxyModule, IDisposable
                 if (File.Exists(item)) File.Delete(item);
                 else if (Directory.Exists(item)) Directory.Delete(item, true);
             }
-            catch (Exception ex) { _logger?.Trace("Cleanup Failed for " + item + ": " + ex.Message); }
+            catch (Exception ex) { _logger?.Debug("Cleanup failed for " + item + ": " + ex.Message); }
         }
         _logger?.Success("Tools folder cleaned.");
     }
@@ -210,6 +208,18 @@ public class PatcherService : IProxyModule, IDisposable
         return hash1 == hash2;
     }
 
+    public ModuleHealthReport GetHealthReport()
+    {
+        bool hasToolsDir = !string.IsNullOrEmpty(_vrcToolsDir) && Directory.Exists(_vrcToolsDir);
+        return new ModuleHealthReport
+        {
+            ModuleName = Name,
+            Status = hasToolsDir ? HealthStatus.Healthy : HealthStatus.Degraded,
+            Reason = hasToolsDir ? "" : "VRChat Tools folder not found",
+            LastChecked = DateTime.Now
+        };
+    }
+
     public void Shutdown()
     {
         _isPatchDesired = false;
@@ -240,23 +250,22 @@ public class PatcherService : IProxyModule, IDisposable
         // Process cleanup — always runs regardless of tools dir or restore outcome.
         // ProcessGuard (Job Object) handles the primary kill; this is a belt-and-suspenders
         // fallback for any stray processes that were started outside the job.
-        _logger?.Trace("Performing process cleanup...");
         foreach (var proc in Process.GetProcessesByName("curl-impersonate-win"))
         {
             try { proc.Kill(); }
-            catch (Exception ex) { _logger?.Trace("Failed to kill curl-impersonate-win (PID " + proc.Id + "): " + ex.Message); }
+            catch { /* Shutdown cleanup — failure is expected */ }
         }
         foreach (var proc in Process.GetProcessesByName("bgutil-ytdlp-pot-provider"))
         {
             try { proc.Kill(); }
-            catch (Exception ex) { _logger?.Trace("Failed to kill bgutil-ytdlp-pot-provider (PID " + proc.Id + "): " + ex.Message); }
+            catch { /* Shutdown cleanup — failure is expected */ }
         }
 
         string relayPortFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "relay_port.dat");
         if (File.Exists(relayPortFile))
         {
             try { File.Delete(relayPortFile); }
-            catch (Exception ex) { _logger?.Trace("Failed to delete relay_port.dat: " + ex.Message); }
+            catch { /* Shutdown cleanup — failure is expected */ }
         }
     }
 

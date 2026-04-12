@@ -78,7 +78,7 @@ public class HttpIpcServer : IDisposable
             using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
             string json = await reader.ReadToEndAsync();
             
-            _logger.Trace("IPC Received: " + json);
+            _logger.Debug("IPC Received: " + json);
 
             var payload = JsonSerializer.Deserialize(json, CoreJsonContext.Default.ResolvePayload);
             if (payload == null || OnResolveRequested == null)
@@ -103,7 +103,7 @@ public class HttpIpcServer : IDisposable
             response.ContentType = "text/plain";
             response.ContentLength64 = buffer.Length;
             await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-            _logger.Trace("IPC Responded with " + buffer.Length + " bytes.");
+            _logger.Debug("IPC Responded with " + buffer.Length + " bytes.");
         }
         catch (Exception ex)
         {

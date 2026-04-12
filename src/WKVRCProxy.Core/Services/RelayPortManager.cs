@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.Services;
@@ -18,7 +19,6 @@ public class RelayPortManager : IProxyModule
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
-        _logger.Trace("Initializing RelayPortManager...");
 
         RefreshPort();
 
@@ -56,6 +56,17 @@ public class RelayPortManager : IProxyModule
         }
     }
 
+    public ModuleHealthReport GetHealthReport()
+    {
+        return new ModuleHealthReport
+        {
+            ModuleName = Name,
+            Status = CurrentPort > 0 ? HealthStatus.Healthy : HealthStatus.Failed,
+            Reason = CurrentPort > 0 ? "" : "Failed to bind relay port",
+            LastChecked = DateTime.Now
+        };
+    }
+
     public void Shutdown()
     {
         if (!string.IsNullOrEmpty(_portFile) && File.Exists(_portFile))
@@ -63,7 +74,6 @@ public class RelayPortManager : IProxyModule
             try
             {
                 File.Delete(_portFile);
-                _logger?.Trace("Cleaned up relay_port.dat.");
             }
             catch (Exception ex)
             {

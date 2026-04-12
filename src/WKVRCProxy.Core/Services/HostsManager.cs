@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 
 namespace WKVRCProxy.Core.Services;
@@ -14,12 +15,13 @@ public class HostsManager : IProxyModule
 
     public event Action<string, object>? OnIpcRequest;
     private TaskCompletionSource<bool>? _hostsSetupTcs;
+    private SystemEventBus? _eventBus;
 
     public Task InitializeAsync(IModuleContext context)
     {
         _context = context;
         _logger = context.Logger;
-        _logger.Trace("Initializing HostsManager...");
+        _eventBus = context.EventBus;
 
         // We run the check in the background so it doesn't block other modules
         _ = CheckAndPromptHostsAsync();
@@ -118,6 +120,7 @@ public class HostsManager : IProxyModule
     {
         _hostsSetupTcs = new TaskCompletionSource<bool>();
         OnIpcRequest?.Invoke("PROMPT_HOSTS_SETUP", new { });
+        _eventBus?.PublishPrompt("HostsManager", "PROMPT_HOSTS_SETUP", new { });
         return await _hostsSetupTcs.Task;
     }
 
@@ -127,6 +130,17 @@ public class HostsManager : IProxyModule
         {
             _hostsSetupTcs.SetResult(accepted);
         }
+    }
+
+    public ModuleHealthReport GetHealthReport()
+    {
+        return new ModuleHealthReport
+        {
+            ModuleName = Name,
+            Status = IsBypassActive() ? HealthStatus.Healthy : HealthStatus.Degraded,
+            Reason = IsBypassActive() ? "" : "Hosts bypass not configured -- relay proxy may not work in public worlds",
+            LastChecked = DateTime.Now
+        };
     }
 
     public void Shutdown()

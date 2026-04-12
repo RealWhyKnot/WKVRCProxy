@@ -17,4 +17,6 @@ public class RelayEvent
     public int StatusCode { get; set; }
     [JsonPropertyName("bytesTransferred")]
     public long BytesTransferred { get; set; }
+    [JsonPropertyName("correlationId")]
+    public string? CorrelationId { get; set; }
 }

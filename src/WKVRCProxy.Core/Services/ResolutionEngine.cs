@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.IPC;
 using WKVRCProxy.Core.Logging;
 using WKVRCProxy.Core.Models;
@@ -28,6 +29,7 @@ public class ResolutionEngine
     private readonly RelayPortManager _relayPortManager;
     private readonly PatcherService _patcher;
     private readonly CurlImpersonateClient? _curlClient;
+    private SystemEventBus? _eventBus;
 
     public event Action<string, object>? OnStatusUpdate;
     private int _activeResolutions = 0;
@@ -56,14 +58,19 @@ public class ResolutionEngine
         }
     }
 
-    private void UpdateStatus(string message)
+    public void SetEventBus(SystemEventBus bus) { _eventBus = bus; }
+
+    private void UpdateStatus(string message, RequestContext? ctx = null)
     {
-        OnStatusUpdate?.Invoke(message, new {
+        var stats = new {
             activeCount = _activeResolutions,
             tierStats = _tierCounts,
             node = _tier2Client.ActiveNode,
-            player = _monitor.CurrentPlayer
-        });
+            player = _monitor.CurrentPlayer,
+            correlationId = ctx?.CorrelationId
+        };
+        OnStatusUpdate?.Invoke(message, stats);
+        _eventBus?.PublishStatus("ResolutionEngine", message, stats, ctx?.CorrelationId);
     }
 
     // Headers sent for reachability checks — mirrors what yt-dlp sends for stream URL validation.
@@ -78,7 +85,7 @@ public class ResolutionEngine
     // Prefers curl-impersonate (Chrome TLS fingerprint, yt-dlp-compatible headers) so CDNs that
     // reject plain .NET HttpClient TLS handshakes or HEAD requests are handled correctly.
     // Falls back to plain HttpClient if curl-impersonate is unavailable.
-    private async Task<bool> CheckUrlReachable(string url)
+    private async Task<bool> CheckUrlReachable(string url, RequestContext ctx)
     {
         if (_curlClient?.IsAvailable == true)
         {
@@ -99,8 +106,9 @@ public class ResolutionEngine
             int status = (int)resp.StatusCode;
             return status < 400 || status == 416;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.Debug("[" + ctx.CorrelationId + "] HttpClient reachability check failed for " + url + ": " + ex.Message);
             return false;
         }
     }
@@ -127,12 +135,14 @@ public class ResolutionEngine
             return null;
         }
 
+        var ctx = RequestContext.Create(targetUrl);
+
         string player = _monitor.CurrentPlayer;
         if (payload.Args.Any(a => a.Contains("AVProVideo"))) player = "AVPro";
         if (payload.Args.Any(a => a.Contains("UnityPlayer"))) player = "Unity";
 
-        _logger.Info("Starting resolution for: " + targetUrl + " [" + player + "]");
-        UpdateStatus("Intercepted " + player + " request...");
+        _logger.Info("[" + ctx.CorrelationId + "] Starting resolution for: " + targetUrl + " [" + player + "]");
+        UpdateStatus("Intercepted " + player + " request...", ctx);
 
         string? result = null;
         string activeTier = _settings.Config.PreferredTier;
@@ -142,7 +152,7 @@ public class ResolutionEngine
         {
             if (activeTier == "tier4")
             {
-                _logger.Info("Tier 4 active: Returning original URL (Passthrough)");
+                _logger.Info("[" + ctx.CorrelationId + "] Tier 4 active: Returning original URL (Passthrough)");
                 result = targetUrl;
             }
             else
@@ -157,39 +167,47 @@ public class ResolutionEngine
                 {
                     if (tier == "tier1")
                     {
-                        var (url, ms) = await TimedResolve(() => ResolveTier1(targetUrl, player));
-                        _logger.Debug($"[Tier 1] resolved in {ms}ms");
-                        if (url != null && await CheckUrlReachable(url)) { result = url; activeTier = "tier1"; break; }
-                        _logger.Warning("Tier 1 failed/unreachable, trying next.");
+                        var (url, ms) = await TimedResolve(() => ResolveTier1(targetUrl, player, ctx));
+                        _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1] resolved in " + ms + "ms");
+                        if (url != null && await CheckUrlReachable(url, ctx)) { result = url; activeTier = "tier1"; break; }
+                        _logger.Warning("[" + ctx.CorrelationId + "] Tier 1 failed/unreachable, trying next.");
                     }
                     else if (tier == "tier2")
                     {
-                        var (url, ms) = await TimedResolve(() => ResolveTier2(targetUrl, player));
-                        _logger.Debug($"[Tier 2] resolved in {ms}ms");
-                        if (url != null && await CheckUrlReachable(url)) { result = url; activeTier = "tier2"; break; }
-                        _logger.Warning("Tier 2 failed/unreachable, trying next.");
+                        var (url, ms) = await TimedResolve(() => ResolveTier2(targetUrl, player, ctx));
+                        _logger.Debug("[" + ctx.CorrelationId + "] [Tier 2] resolved in " + ms + "ms");
+                        if (url != null && await CheckUrlReachable(url, ctx)) { result = url; activeTier = "tier2"; break; }
+                        _logger.Warning("[" + ctx.CorrelationId + "] Tier 2 failed/unreachable, trying next.");
                     }
                     else if (tier == "tier3")
                     {
-                        var (url, ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args));
-                        _logger.Debug($"[Tier 3] resolved in {ms}ms");
+                        var (url, ms) = await TimedResolve(() => ResolveTier3(targetUrl, payload.Args, ctx));
+                        _logger.Debug("[" + ctx.CorrelationId + "] [Tier 3] resolved in " + ms + "ms");
                         if (url != null) { result = url; activeTier = "tier3"; break; }
-                        _logger.Warning("Tier 3 failed.");
+                        _logger.Warning("[" + ctx.CorrelationId + "] Tier 3 failed.");
                     }
                 }
 
                 // Tier 4 passthrough fallback (if not disabled)
                 if (result == null && !disabled.Contains("tier4"))
                 {
-                    _logger.Warning("All active tiers failed. Using Tier 4 passthrough.");
+                    _logger.Warning("[" + ctx.CorrelationId + "] All active tiers failed. Using Tier 4 passthrough.");
                     result = targetUrl;
                     activeTier = "tier4";
+                    _eventBus?.PublishError("ResolutionEngine", new ErrorContext {
+                        Category = ErrorCategory.Network,
+                        Code = ErrorCodes.ALL_TIERS_FAILED,
+                        Summary = "All resolution tiers failed",
+                        Detail = "Tier 1 (yt-dlp), Tier 2 (cloud), and Tier 3 (original yt-dlp) all failed or returned unreachable URLs for: " + targetUrl,
+                        ActionHint = "Check your internet connection. The video URL may be geo-restricted or require authentication.",
+                        IsRecoverable = true
+                    }, ctx.CorrelationId);
                 }
             }
         }
         catch (Exception ex)
         {
-            _logger.Error("Resolution loop fatal error: " + ex.Message, ex);
+            _logger.Error("[" + ctx.CorrelationId + "] Resolution loop fatal error: " + ex.Message, ex);
             result = targetUrl;
             activeTier = "tier4-error";
         }
@@ -199,7 +217,7 @@ public class ResolutionEngine
         string streamType = isLive ? "live" : (!string.IsNullOrEmpty(result) && result != "FAILED" ? "vod" : "unknown");
 
         if (isLive)
-            _logger.Info("Detected HLS/live stream. Stream type: " + streamType);
+            _logger.Info("[" + ctx.CorrelationId + "] Detected HLS/live stream. Stream type: " + streamType);
 
         if (_settings.Config.EnableRelayBypass && _hostsManager.IsBypassActive() && !string.IsNullOrEmpty(result) && result != "FAILED")
         {
@@ -211,12 +229,12 @@ public class ResolutionEngine
                 {
                     string relayUrl = "http://localhost.youtube.com:" + port + "/play?target=" + WebUtility.UrlEncode(encodedUrl);
                     result = relayUrl;
-                    _logger.Info("URL wrapped for localhost relay proxy bypass.");
+                    _logger.Info("[" + ctx.CorrelationId + "] URL wrapped for localhost relay proxy bypass.");
                 }
             }
             catch (Exception ex)
             {
-                _logger.Warning("Failed to wrap URL for relay: " + ex.Message);
+                _logger.Warning("[" + ctx.CorrelationId + "] Failed to wrap URL for relay: " + ex.Message);
             }
         }
 
@@ -240,14 +258,14 @@ public class ResolutionEngine
 
         resolutionSw.Stop();
         _activeResolutions--;
-        UpdateStatus("Resolution completed via " + activeTier.ToUpper());
-        _logger.Success($"Final Resolution [{activeTier}] [{streamType}] in {resolutionSw.ElapsedMilliseconds}ms: " + (result != null && result.Length > 100 ? result.Substring(0, 100) + "..." : result));
+        UpdateStatus("Resolution completed via " + activeTier.ToUpper(), ctx);
+        _logger.Success("[" + ctx.CorrelationId + "] Final Resolution [" + activeTier + "] [" + streamType + "] in " + resolutionSw.ElapsedMilliseconds + "ms: " + (result != null && result.Length > 100 ? result.Substring(0, 100) + "..." : result));
         return result;
     }
 
-    private async Task<string?> ResolveTier1(string url, string player)
+    private async Task<string?> ResolveTier1(string url, string player, RequestContext ctx)
     {
-        _logger.Debug("[Tier 1] Attempting native yt-dlp resolution...");
+        _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1] Attempting native yt-dlp resolution...");
 
         var args = new List<string> { "--get-url", "--no-warnings", "--playlist-items", "1" };
         if (_settings.Config.ForceIPv4) args.Add("--force-ipv4");
@@ -268,26 +286,26 @@ public class ResolutionEngine
         }
 
         args.Add(url);
-        return await RunYtDlp("yt-dlp.exe", args);
+        return await RunYtDlp("yt-dlp.exe", args, ctx);
     }
 
-    private async Task<string?> ResolveTier2(string url, string player)
+    private async Task<string?> ResolveTier2(string url, string player, RequestContext ctx)
     {
-        _logger.Debug("[Tier 2] Calling WhyKnot.dev via WebSocket...");
+        _logger.Debug("[" + ctx.CorrelationId + "] [Tier 2] Calling WhyKnot.dev via WebSocket...");
         int maxHeight = 1080;
         try {
             string res = _settings.Config.PreferredResolution.Replace("p", "");
             if (int.TryParse(res, out var parsed)) maxHeight = parsed;
-        } catch { }
+        } catch (Exception ex) { _logger.Debug("[" + ctx.CorrelationId + "] Failed to parse PreferredResolution: " + ex.Message); }
 
         return await _tier2Client.ResolveUrlAsync(url, player, maxHeight);
     }
 
-    private async Task<string?> ResolveTier3(string url, string[] originalArgs)
+    private async Task<string?> ResolveTier3(string url, string[] originalArgs, RequestContext ctx)
     {
-        _logger.Debug("[Tier 3] Attempting VRChat's original yt-dlp...");
+        _logger.Debug("[" + ctx.CorrelationId + "] [Tier 3] Attempting VRChat's original yt-dlp...");
         var args = originalArgs.ToList();
-        return await RunYtDlp("yt-dlp-og.exe", args);
+        return await RunYtDlp("yt-dlp-og.exe", args, ctx);
     }
 
     // yt-dlp-og.exe lives in the VRChat Tools folder (created by PatcherService as a backup).
@@ -306,16 +324,16 @@ public class ResolutionEngine
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", binary);
     }
 
-    private async Task<string?> RunYtDlp(string binary, List<string> args)
+    private async Task<string?> RunYtDlp(string binary, List<string> args, RequestContext ctx)
     {
         string path = GetBinaryPath(binary);
         if (!File.Exists(path))
         {
-            _logger.Error(binary + " not found at: " + path);
+            _logger.Error("[" + ctx.CorrelationId + "] " + binary + " not found at: " + path);
             return null;
         }
 
-        _logger.Trace("Executing: " + binary + " " + string.Join(" ", args));
+        _logger.Debug("[" + ctx.CorrelationId + "] Executing: " + binary + " " + string.Join(" ", args));
 
         try
         {
@@ -362,20 +380,40 @@ public class ResolutionEngine
             // Log any stderr output regardless of whether it timed out or resolved
             string stderrOutput = stderrLines.ToString().Trim();
             if (!string.IsNullOrEmpty(stderrOutput))
-                _logger.Warning($"[{binary}] stderr: " + stderrOutput);
+                _logger.Warning("[" + ctx.CorrelationId + "] [" + binary + "] stderr: " + stderrOutput);
 
             if (completed == timeoutTask)
             {
-                _logger.Warning(binary + " timed out.");
-                try { process.Kill(); } catch { }
+                _logger.Warning("[" + ctx.CorrelationId + "] " + binary + " timed out after 15s.");
+                _eventBus?.PublishError("ResolutionEngine", new ErrorContext {
+                    Category = ErrorCategory.ChildProcess,
+                    Code = ErrorCodes.YTDLP_TIMEOUT,
+                    Summary = binary + " timed out after 15 seconds",
+                    Detail = "The process did not produce a URL within the timeout window",
+                    ActionHint = "The video source may be slow to respond. Try again or switch to a different tier.",
+                    IsRecoverable = true
+                }, ctx.CorrelationId);
+                try { process.Kill(); } catch { /* Process may have already exited */ }
                 return null;
             }
+
+            // Log non-zero exit codes for debugging
+            if (process.HasExited && process.ExitCode != 0)
+                _logger.Debug("[" + ctx.CorrelationId + "] " + binary + " exited with code " + process.ExitCode);
 
             return await tcs.Task;
         }
         catch (Exception ex)
         {
-            _logger.Trace(binary + " execution error: " + ex.Message);
+            _logger.Error("[" + ctx.CorrelationId + "] " + binary + " execution error: " + ex.Message, ex);
+            _eventBus?.PublishError("ResolutionEngine", new ErrorContext {
+                Category = ErrorCategory.ChildProcess,
+                Code = ErrorCodes.YTDLP_EXECUTION_ERROR,
+                Summary = binary + " failed to execute",
+                Detail = ex.Message,
+                ActionHint = "The binary may be corrupted or missing. Try reinstalling WKVRCProxy.",
+                IsRecoverable = false
+            }, ctx.CorrelationId);
             return null;
         }
     }

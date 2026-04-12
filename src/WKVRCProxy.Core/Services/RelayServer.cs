@@ -8,12 +8,17 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 using WKVRCProxy.Core.Models;
 
 namespace WKVRCProxy.Core.Services;
 
 [SupportedOSPlatform("windows")]
+[DependsOn(typeof(RelayPortManager), critical: true)]
+[DependsOn(typeof(ProxyRuleManager))]
+[DependsOn(typeof(CurlImpersonateClient))]
+[DependsOn(typeof(PotProviderService))]
 public class RelayServer : IProxyModule, IDisposable
 {
     public string Name => "RelayServer";
@@ -27,13 +32,13 @@ public class RelayServer : IProxyModule, IDisposable
     private ProxyRuleManager? _ruleManager;
     private CurlImpersonateClient? _curlClient;
     private PotProviderService? _potProvider;
+    private SystemEventBus? _eventBus;
     private readonly HttpClient _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
 
     public Task InitializeAsync(IModuleContext context)
     {
         _context = context;
         _logger = context.Logger;
-        _logger.Trace("Initializing RelayServer...");
 
         try
         {
@@ -41,6 +46,7 @@ public class RelayServer : IProxyModule, IDisposable
             _ruleManager = context.GetModule<ProxyRuleManager>();
             _curlClient = context.GetModule<CurlImpersonateClient>();
             _potProvider = context.GetModule<PotProviderService>();
+            _eventBus = context.EventBus;
 
             int attempts = 0;
             bool success = false;
@@ -80,7 +86,15 @@ public class RelayServer : IProxyModule, IDisposable
 
             if (!success)
             {
-                _logger.Error("FATAL: Unable to bind to any local port after 5 attempts. Please check your firewall or restart your PC.");
+                _logger.Fatal("Unable to bind to any local port after 5 attempts. Please check your firewall or restart your PC.");
+                _eventBus?.PublishError("RelayServer", new ErrorContext {
+                    Category = ErrorCategory.Network,
+                    Code = ErrorCodes.RELAY_PORT_BIND_FAILED,
+                    Summary = "Relay server could not bind to any port",
+                    Detail = "5 consecutive port binding attempts failed",
+                    ActionHint = "Check your firewall settings or restart your PC",
+                    IsRecoverable = false
+                });
                 return Task.CompletedTask;
             }
 
@@ -201,15 +215,18 @@ public class RelayServer : IProxyModule, IDisposable
             targetBase64 = targetBase64.Replace(" ", "+");
             string targetUrl = Encoding.UTF8.GetString(Convert.FromBase64String(targetBase64));
 
-            _logger?.Trace("Relaying request: " + context.Request.HttpMethod + " -> " + targetUrl);
+            var ctx = RequestContext.Create(targetUrl);
+            _logger?.Debug("[" + ctx.CorrelationId + "] Relaying request: " + context.Request.HttpMethod + " -> " + targetUrl);
 
             var relayEvent = new RelayEvent {
                 TargetUrl = targetUrl,
                 Method = context.Request.HttpMethod,
                 StatusCode = 0,
-                BytesTransferred = 0
+                BytesTransferred = 0,
+                CorrelationId = ctx.CorrelationId
             };
             OnRelayEvent?.Invoke(relayEvent);
+            _eventBus?.PublishRelay(relayEvent, ctx.CorrelationId);
 
             // Detect HLS content early from the URL — refined later from Content-Type header.
             // HLS manifests must be rewritten so all segment URLs route through the relay,
@@ -442,6 +459,21 @@ public class RelayServer : IProxyModule, IDisposable
         {
             try { context.Response.Close(); } catch { }
         }
+    }
+
+    public ModuleHealthReport GetHealthReport()
+    {
+        return new ModuleHealthReport
+        {
+            ModuleName = Name,
+            Status = (_listener != null && _listener.IsListening)
+                ? HealthStatus.Healthy
+                : HealthStatus.Failed,
+            Reason = (_listener == null || !_listener.IsListening)
+                ? "Relay server not listening"
+                : "",
+            LastChecked = DateTime.Now
+        };
     }
 
     public void Shutdown()

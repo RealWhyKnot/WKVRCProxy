@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Photino.NET;
 using WKVRCProxy.Core;
+using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 using WKVRCProxy.Core.Services;
 using WKVRCProxy.Core.IPC;
@@ -36,7 +37,7 @@ class Program
         }
 
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        
+
         try
         {
             AppDomain.CurrentDomain.UnhandledException += (s, e) => {
@@ -59,9 +60,12 @@ class Program
         _settings = new SettingsManager(baseDir);
         _logger = new Logger(baseDir, "System", _settings);
         _settings.SetLogger(_logger); // inject after construction — breaks circular dep
-        
+
         _coordinator = new ModuleCoordinator(_logger, _settings);
-        
+
+        // Wire logger into the centralized event bus
+        _logger.SetEventBus(_coordinator.EventBus);
+
         var logMonitor = new VrcLogMonitor();
         var codecInstaller = new CodecInstaller();
         var patcherService = new PatcherService();
@@ -88,6 +92,8 @@ class Program
         _coordinator.Register(relayServer);
         _coordinator.Register(integrityManager);
 
+        // Keep legacy event handlers for backward compatibility during transition.
+        // These will be removed once all UI communication moves through the event bus.
         hostsManager.OnIpcRequest += (type, data) => {
             if (_isWindowReady) {
                 try {
@@ -99,7 +105,6 @@ class Program
                 }
             }
             else {
-                // Background delay and retry if window not ready
                 Task.Run(async () => {
                     while (!_isWindowReady) await Task.Delay(200);
                     _window?.Invoke(() => {
@@ -122,19 +127,50 @@ class Program
         };
 
         var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient);
+        resEngine.SetEventBus(_coordinator.EventBus);
+
         ipcServer.OnResolveRequested += async (payload) => await resEngine.ResolveAsync(payload);
         logMonitor.OnVrcPathDetected += (path) => {
             patcherService.UpdateToolsDir(path);
             ipcServer.ExportPortToDirectory(path);
         };
-        
+
         resEngine.OnStatusUpdate += (msg, stats) => {
             if (_isWindowReady) {
                 try {
                     _window?.Invoke(() => {
                         _window?.SendWebMessage(JsonSerializer.Serialize(new { type = "STATUS", data = new { message = msg, stats = stats } }));
                     });
-                } catch { }
+                } catch (Exception ex) {
+                    _logger?.Warning("Status event send to UI failed: " + ex.Message, ex);
+                }
+            }
+        };
+
+        // Centralized event bus subscription — single point for all events to UI
+        _coordinator.EventBus.OnEvent += (evt) => {
+            if (!_isWindowReady) return;
+            try {
+                string eventType;
+                object data;
+                switch (evt.Type) {
+                    case SystemEventType.Health:
+                        eventType = "HEALTH";
+                        data = evt.Payload!;
+                        break;
+                    case SystemEventType.Error:
+                        eventType = "ERROR";
+                        data = evt.Payload!;
+                        break;
+                    default:
+                        return; // Log, Status, Relay, Prompt handled by legacy events for now
+                }
+                _window?.Invoke(() => {
+                    _window?.SendWebMessage(JsonSerializer.Serialize(
+                        new { type = eventType, data = data, correlationId = evt.CorrelationId, source = evt.SourceModule }));
+                });
+            } catch (Exception ex) {
+                System.Diagnostics.Debug.WriteLine("Event bus -> UI dispatch error: " + ex.Message);
             }
         };
 
@@ -175,6 +211,24 @@ class Program
                         string wrapperPath = Path.Combine(baseDir, "tools", "redirector.exe");
                         if (File.Exists(wrapperPath)) patcherService.StartMonitoring(wrapperPath);
                     }
+
+                    // Start periodic health broadcast (every 10 seconds)
+                    _ = Task.Run(async () => {
+                        while (true)
+                        {
+                            await Task.Delay(10000);
+                            if (_isWindowReady && _coordinator != null)
+                            {
+                                try
+                                {
+                                    var health = _coordinator.GetSystemHealth();
+                                    foreach (var report in health)
+                                        _coordinator.EventBus.PublishHealth(report);
+                                }
+                                catch { /* Health check itself shouldn't crash the app */ }
+                            }
+                        }
+                    });
                 } catch (Exception ex) {
                     _logger?.Fatal("Coordinator initialization failed: " + ex.Message, ex);
                 }
@@ -199,11 +253,31 @@ class Program
 
         string redirector = Path.Combine(toolsDir, "redirector.exe");
         if (!File.Exists(redirector))
+        {
             _logger?.Fatal("PREFLIGHT: redirector.exe missing from tools/ — patching is disabled. Reinstall or rebuild.");
+            _coordinator?.EventBus.PublishError("Preflight", new ErrorContext {
+                Category = ErrorCategory.FileSystem,
+                Code = ErrorCodes.REDIRECTOR_MISSING,
+                Summary = "redirector.exe missing from tools/",
+                Detail = "Patching is disabled without this file",
+                ActionHint = "Reinstall or rebuild WKVRCProxy",
+                IsRecoverable = false
+            });
+        }
 
         string ytdlp = Path.Combine(toolsDir, "yt-dlp.exe");
         if (!File.Exists(ytdlp))
+        {
             _logger?.Warning("PREFLIGHT: yt-dlp.exe missing from tools/ — Tier 1 resolution will fail.");
+            _coordinator?.EventBus.PublishError("Preflight", new ErrorContext {
+                Category = ErrorCategory.FileSystem,
+                Code = ErrorCodes.YTDLP_MISSING,
+                Summary = "yt-dlp.exe missing from tools/",
+                Detail = "Tier 1 resolution will fail without this file",
+                ActionHint = "Reinstall or rebuild WKVRCProxy",
+                IsRecoverable = true
+            });
+        }
 
         string defaultVrcTools = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "Low",
@@ -231,7 +305,7 @@ class Program
         {
             string hostsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers", "etc", "hosts");
             File.AppendAllText(hostsPath, "\r\n127.0.0.1 localhost.youtube.com\r\n");
-            
+
             Process.Start(new ProcessStartInfo("ipconfig", "/flushdns") { CreateNoWindow = true, UseShellExecute = false })?.WaitForExit();
         }
         catch (Exception ex)
@@ -306,7 +380,7 @@ class Program
                         {
                             var psi = new ProcessStartInfo {
                                 FileName = "netsh",
-                                Arguments = $"advfirewall firewall add rule name=\"WKVRCProxy Relay\" dir=in action=allow program=\"{Process.GetCurrentProcess().MainModule?.FileName}\" enable=yes",
+                                Arguments = "advfirewall firewall add rule name=\"WKVRCProxy Relay\" dir=in action=allow program=\"" + Process.GetCurrentProcess().MainModule?.FileName + "\" enable=yes",
                                 Verb = "runas",
                                 UseShellExecute = true,
                                 WindowStyle = ProcessWindowStyle.Hidden
@@ -319,6 +393,17 @@ class Program
                             _logger?.Error("Failed to add firewall rule: " + ex.Message);
                         }
                     });
+                    break;
+                case "GET_HEALTH":
+                    if (_coordinator != null)
+                    {
+                        var health = _coordinator.GetSystemHealth();
+                        _window?.SendWebMessage(JsonSerializer.Serialize(new {
+                            type = "HEALTH",
+                            data = health,
+                            overall = _coordinator.GetOverallHealth().ToString()
+                        }));
+                    }
                     break;
             }
         } catch (Exception ex) {

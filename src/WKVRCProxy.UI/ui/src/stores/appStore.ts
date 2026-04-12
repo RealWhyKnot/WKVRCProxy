@@ -100,7 +100,7 @@ export const useAppStore = defineStore('app', () => {
   const relayEvents = ref<RelayEvent[]>([])
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.11.2-C0AE')
+  const version = ref('2026.4.11.3-6B2E')
 
   function handleMessage(message: string) {
     try {
@@ -216,6 +216,7 @@ export const useAppStore = defineStore('app', () => {
     clearLogs
   }
 })
+
 
 
 

@@ -39,7 +39,7 @@ public class PipeServer : IDisposable
                 var stream = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
                 await stream.WaitForConnectionAsync(_cts.Token);
                 
-                _logger.Trace("Pipe client connected.");
+                _logger.Debug("Pipe client connected.");
                 _ = Task.Run(() => HandleClientAsync(stream));
             }
             catch (OperationCanceledException) { break; }
@@ -67,7 +67,7 @@ public class PipeServer : IDisposable
                     return;
                 }
 
-                _logger.Trace("Received Payload: " + json);
+                _logger.Debug("Received Payload: " + json);
 
                 var payload = JsonSerializer.Deserialize(json, CoreJsonContext.Default.ResolvePayload);
                 if (payload == null || OnResolveRequested == null)
@@ -85,7 +85,7 @@ public class PipeServer : IDisposable
                 {
                     string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(result));
                     await writer.WriteLineAsync(b64);
-                    _logger.Trace("Sent Response: " + b64);
+                    _logger.Debug("Sent Response: " + b64);
                 }
             }
         }

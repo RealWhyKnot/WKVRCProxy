@@ -19,7 +19,6 @@ public class ProxyRuleManager : IProxyModule
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
-        _logger.Trace("Initializing ProxyRuleManager...");
 
         _rulesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "proxy-rules.json");
 
@@ -36,7 +35,7 @@ public class ProxyRuleManager : IProxyModule
                     foreach(var kvp in _config.Domains) newDict[kvp.Key] = kvp.Value;
                     _config.Domains = newDict;
                 }
-                _logger.Trace("Loaded proxy-rules.json");
+                _logger.Debug("Loaded proxy-rules.json");
             }
             catch (Exception ex)
             {
@@ -61,7 +60,7 @@ public class ProxyRuleManager : IProxyModule
             {
                 string json = JsonSerializer.Serialize(_config, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(_rulesPath, json);
-                _logger.Trace("Created default proxy-rules.json");
+                _logger.Debug("Created default proxy-rules.json");
             }
             catch (Exception ex)
             {
