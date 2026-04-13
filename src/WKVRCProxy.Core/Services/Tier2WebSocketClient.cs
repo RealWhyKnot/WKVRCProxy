@@ -182,7 +182,15 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
                 
                 if (!string.IsNullOrEmpty(requestId) && _pendingRequests.TryRemove(requestId, out var tcs))
                 {
+                    if (success && !string.IsNullOrEmpty(streamUrl))
+                        _logger?.Debug("[Tier 2] resolve_result [" + requestId.Substring(0, 8) + "...]: success, URL length=" + streamUrl.Length);
+                    else
+                        _logger?.Warning("[Tier 2] resolve_result [" + requestId.Substring(0, 8) + "...]: " + (success ? "success flag set but URL is empty" : "node reported failure — no stream URL"));
                     tcs.TrySetResult(success ? streamUrl : null);
+                }
+                else if (!string.IsNullOrEmpty(requestId))
+                {
+                    _logger?.Warning("[Tier 2] resolve_result for unknown/already-expired request [" + requestId.Substring(0, Math.Min(8, requestId.Length)) + "...] — likely a timeout race.");
                 }
             }
             else if (action == "relay_ready" || action == "relay_error" || action == "relay_read" || action == "resolve_log")
@@ -215,12 +223,21 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
         catch (Exception ex) { _logger?.Error("[Tier 2] Binary send error: " + ex.Message); }
     }
 
-    public async Task<string?> ResolveUrlAsync(string url, string player, int maxHeight)
+    public async Task<string?> ResolveUrlAsync(string url, string player, int maxHeight, string? correlationId = null)
     {
+        string shortUrl = url.Length > 100 ? url.Substring(0, 100) + "..." : url;
+        string prefix = correlationId != null ? "[" + correlationId + "] [Tier 2] " : "[Tier 2] ";
+        _logger?.Debug(prefix + "ResolveUrlAsync: player=" + player + " maxHeight=" + maxHeight + " url=" + shortUrl);
+
         if (!IsConnected)
         {
+            _logger?.Warning(prefix + "Not connected — attempting reconnect before resolve.");
             await ConnectToBestNodeAsync();
-            if (!IsConnected) return null;
+            if (!IsConnected)
+            {
+                _logger?.Warning(prefix + "Reconnect failed — Tier 2 unavailable for this request.");
+                return null;
+            }
         }
 
         string requestId = Guid.NewGuid().ToString();
@@ -241,22 +258,27 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
             string json = JsonSerializer.Serialize(request);
             byte[] bytes = Encoding.UTF8.GetBytes(json);
             await _webSocket!.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
-            
+
             var timeoutTask = Task.Delay(20000);
             var completed = await Task.WhenAny(tcs.Task, timeoutTask);
-            
+
             if (completed == timeoutTask)
             {
-                _logger?.Warning("[Tier 2] Resolution timed out via " + _activeNodeId?.ToUpper());
+                _logger?.Warning(prefix + "Resolution timed out after 20s via " + _activeNodeId?.ToUpper() + " for: " + shortUrl);
                 _pendingRequests.TryRemove(requestId, out _);
                 return null;
             }
 
-            return await tcs.Task;
+            string? resolved = await tcs.Task;
+            if (resolved != null)
+                _logger?.Debug(prefix + "Resolved via " + _activeNodeId?.ToUpper() + ": " + (resolved.Length > 100 ? resolved.Substring(0, 100) + "..." : resolved));
+            else
+                _logger?.Warning(prefix + "Node " + _activeNodeId?.ToUpper() + " returned null for: " + shortUrl);
+            return resolved;
         }
         catch (Exception ex)
         {
-            _logger?.Error("[Tier 2] Request error: " + ex.Message);
+            _logger?.Error(prefix + "Request error for " + shortUrl + ": " + ex.Message);
             _pendingRequests.TryRemove(requestId, out _);
             return null;
         }

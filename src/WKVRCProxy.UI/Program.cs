@@ -126,7 +126,7 @@ class Program
             }
         };
 
-        var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient);
+        var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient, potProvider);
         resEngine.SetEventBus(_coordinator.EventBus);
 
         ipcServer.OnResolveRequested += async (payload) => await resEngine.ResolveAsync(payload);

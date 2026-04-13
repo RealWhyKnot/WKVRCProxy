@@ -40,6 +40,8 @@ public class PotProviderService : IProxyModule, IDisposable
 
             string exePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "bgutil-ytdlp-pot-provider.exe");
 
+            _logger.Debug("[PotProvider] Allocated port " + _port + " for bgutil sidecar.");
+
             if (File.Exists(exePath))
             {
                 var psi = new ProcessStartInfo
@@ -54,7 +56,7 @@ public class PotProviderService : IProxyModule, IDisposable
 
                 _providerProcess = Process.Start(psi);
                 ProcessGuard.Register(_providerProcess);
-                _logger.Debug("Started bgutil-ytdlp-pot-provider on port " + _port);
+                _logger.Info("[PotProvider] Started bgutil-ytdlp-pot-provider (PID " + (_providerProcess?.Id.ToString() ?? "?") + ") on port " + _port + ".");
 
                 // Pipe stdout/stderr to logger so child process output is visible
                 if (_providerProcess != null)
@@ -104,15 +106,35 @@ public class PotProviderService : IProxyModule, IDisposable
     {
         if (string.IsNullOrEmpty(videoId)) return null;
 
+        string shortId = videoId.Substring(0, Math.Min(8, videoId.Length)) + (videoId.Length > 8 ? "..." : "");
+
+        // Cache hit
         if (_tokenCache.TryGetValue(videoId, out var cached))
         {
-            if (cached.expires > DateTime.Now) return cached.token;
+            if (cached.expires > DateTime.Now)
+            {
+                _logger?.Debug("[PotProvider] Cache hit for video " + shortId + " (expires " + cached.expires.ToString("HH:mm:ss") + ").");
+                return cached.token;
+            }
             _tokenCache.TryRemove(videoId, out _);
+            _logger?.Debug("[PotProvider] Cache expired for video " + shortId + " — fetching fresh token.");
+        }
+        else
+        {
+            _logger?.Debug("[PotProvider] Cache miss for video " + shortId + " — fetching token.");
         }
 
         if (_port == 0)
         {
-            _logger?.Warning("PO Token provider not initialized (port=0). Token fetch skipped.");
+            _logger?.Error("[PotProvider] Port is 0 — bgutil sidecar was never started. PO tokens unavailable; yt-dlp will likely fail YouTube bot detection.");
+            return null;
+        }
+
+        // Guard: if the bgutil process has crashed, the HTTP call will just time out (10s).
+        // Fail fast with a clear error instead of burning the timeout on every video request.
+        if (_providerProcess != null && _providerProcess.HasExited)
+        {
+            _logger?.Error("[PotProvider] bgutil-ytdlp-pot-provider has crashed (exit code " + _providerProcess.ExitCode + "). Restart WKVRCProxy to restore PO token support.");
             return null;
         }
 
@@ -125,26 +147,48 @@ public class PotProviderService : IProxyModule, IDisposable
                 visitorData = visitorData,
                 dataSyncId = videoId
             };
-            
-            string json = JsonSerializer.Serialize(payload);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var response = await _httpClient.PostAsync(url, content);
+            string json = JsonSerializer.Serialize(payload);
+
+            // If bgutil just started, it may not be listening yet. Retry once after a brief delay
+            // rather than failing the entire resolution on the very first video request.
+            // Each attempt gets a fresh StringContent — HttpClient may partially read the content
+            // stream even before a connection-refused error, so reusing it could send an empty body.
+            HttpResponseMessage response;
+            try
+            {
+                response = await _httpClient.PostAsync(url, new StringContent(json, Encoding.UTF8, "application/json"));
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger?.Debug("[PotProvider] First attempt failed (" + ex.Message + ") — bgutil may still be starting. Retrying in 600ms...");
+                await Task.Delay(600);
+                response = await _httpClient.PostAsync(url, new StringContent(json, Encoding.UTF8, "application/json"));
+            }
+
             response.EnsureSuccessStatusCode();
 
             string responseJson = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(responseJson);
-            
+
             if (doc.RootElement.TryGetProperty("poToken", out var tokenObj))
             {
                 string token = tokenObj.GetString() ?? "";
-                _tokenCache[videoId] = (token, DateTime.Now.AddHours(4)); // Cache for 4 hours
+                if (string.IsNullOrEmpty(token))
+                {
+                    _logger?.Warning("[PotProvider] bgutil returned an empty poToken for video " + shortId + ".");
+                    return null;
+                }
+                _tokenCache[videoId] = (token, DateTime.Now.AddHours(4));
+                _logger?.Debug("[PotProvider] Token acquired and cached for video " + shortId + " (expires in 4h).");
                 return token;
             }
+
+            _logger?.Warning("[PotProvider] Response did not contain 'poToken' field for video " + shortId + ". Body: " + responseJson.Substring(0, Math.Min(200, responseJson.Length)));
         }
         catch (Exception ex)
         {
-            _logger?.Warning("Failed to fetch PO Token: " + ex.Message);
+            _logger?.Error("[PotProvider] Token fetch failed for video " + shortId + " (" + ex.GetType().Name + "): " + ex.Message);
         }
 
         return null;
