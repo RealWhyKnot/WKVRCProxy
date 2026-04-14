@@ -131,11 +131,18 @@ public class PotProviderService : IProxyModule, IDisposable
         }
 
         // Guard: if the bgutil process has crashed, the HTTP call will just time out (10s).
-        // Fail fast with a clear error instead of burning the timeout on every video request.
+        // Attempt to restart it automatically rather than leaving PO tokens dead for the session.
         if (_providerProcess != null && _providerProcess.HasExited)
         {
-            _logger?.Error("[PotProvider] bgutil-ytdlp-pot-provider has crashed (exit code " + _providerProcess.ExitCode + "). Restart WKVRCProxy to restore PO token support.");
-            return null;
+            _logger?.Warning("[PotProvider] bgutil-ytdlp-pot-provider crashed (exit code " + _providerProcess.ExitCode + ") — attempting restart.");
+            await RestartProviderAsync();
+            if (_providerProcess == null || _providerProcess.HasExited)
+            {
+                _logger?.Error("[PotProvider] bgutil restart failed — PO tokens unavailable for this request.");
+                return null;
+            }
+            // Give the restarted server a moment to start listening before the HTTP POST
+            await Task.Delay(800);
         }
 
         try
@@ -192,6 +199,57 @@ public class PotProviderService : IProxyModule, IDisposable
         }
 
         return null;
+    }
+
+    private Task RestartProviderAsync()
+    {
+        try
+        {
+            // Clean up the old (crashed) process handle
+            try { _providerProcess?.Dispose(); } catch { }
+            _providerProcess = null;
+
+            string exePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "bgutil-ytdlp-pot-provider.exe");
+            if (!File.Exists(exePath))
+            {
+                _logger?.Error("[PotProvider] Cannot restart — bgutil-ytdlp-pot-provider.exe not found.");
+                return Task.CompletedTask;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = "-p " + _port,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            _providerProcess = Process.Start(psi);
+            if (_providerProcess == null)
+            {
+                _logger?.Error("[PotProvider] bgutil restart: Process.Start returned null.");
+                return Task.CompletedTask;
+            }
+
+            ProcessGuard.Register(_providerProcess);
+            _logger?.Info("[PotProvider] bgutil restarted (PID " + _providerProcess.Id + ") on port " + _port + ".");
+
+            // Pipe stdout/stderr from restarted process
+            _ = Task.Run(async () => {
+                try { using var r = _providerProcess.StandardOutput; string? l; while ((l = await r.ReadLineAsync()) != null) if (!string.IsNullOrEmpty(l)) _logger?.Debug("[PotProvider] " + l); } catch { }
+            });
+            _ = Task.Run(async () => {
+                try { using var r = _providerProcess.StandardError; string? l; while ((l = await r.ReadLineAsync()) != null) if (!string.IsNullOrEmpty(l)) _logger?.Warning("[PotProvider] " + l); } catch { }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error("[PotProvider] bgutil restart failed: " + ex.Message);
+        }
+
+        return Task.CompletedTask;
     }
 
     public ModuleHealthReport GetHealthReport()

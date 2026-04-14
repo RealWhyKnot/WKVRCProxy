@@ -106,10 +106,16 @@ public class ResolutionEngine
         {
             _logger.Debug("[" + ctx.CorrelationId + "] Probing via curl-impersonate [" + probeMode + "]: " + shortUrl);
             int status = await _curlClient.CheckReachabilityAsync(url, headers);
-            bool reachable = status is (>= 200 and < 400) or 416;
             if (status == -1)
-                _logger.Warning("[" + ctx.CorrelationId + "] Reachability check: curl-impersonate did not return an HTTP status (process error or timeout) for " + shortUrl);
-            else if (!reachable)
+            {
+                // Probe timed out or process error — cannot confirm reachability, but do not reject.
+                // Streaming servers (e.g. private HLS, proxy URLs) often do not respond to probe
+                // requests within 5s. Rejecting on timeout causes valid URLs to cascade needlessly.
+                _logger.Warning("[" + ctx.CorrelationId + "] Reachability check: curl-impersonate probe timed out for " + shortUrl + " — accepting URL (benefit of the doubt).");
+                return true;
+            }
+            bool reachable = status is (>= 200 and < 400) or 416;
+            if (!reachable)
                 _logger.Warning("[" + ctx.CorrelationId + "] Reachability check: curl-impersonate returned HTTP " + status + " [" + probeMode + "] for " + shortUrl);
             else
                 _logger.Debug("[" + ctx.CorrelationId + "] Reachability check: curl-impersonate HTTP " + status + " — OK for " + shortUrl);
@@ -133,6 +139,12 @@ public class ResolutionEngine
             else
                 _logger.Debug("[" + ctx.CorrelationId + "] Reachability check: HttpClient HTTP " + status + " — OK for " + shortUrl);
             return reachable;
+        }
+        catch (OperationCanceledException)
+        {
+            // Probe timed out — accept with warning rather than rejecting a potentially valid URL.
+            _logger.Warning("[" + ctx.CorrelationId + "] Reachability check: HttpClient probe timed out for " + shortUrl + " — accepting URL (benefit of the doubt).");
+            return true;
         }
         catch (Exception ex)
         {
@@ -224,13 +236,12 @@ public class ResolutionEngine
                         {
                             _logger.Warning("[" + ctx.CorrelationId + "] [Tier 2] Cloud resolver returned no URL after " + ms + "ms.");
                         }
-                        else if (!await CheckUrlReachable(url, ctx))
-                        {
-                            _logger.Warning("[" + ctx.CorrelationId + "] [Tier 2] URL resolved in " + ms + "ms but failed reachability check — cascading to next tier.");
-                        }
                         else
                         {
-                            _logger.Info("[" + ctx.CorrelationId + "] [Tier 2] Success in" + ms + "ms.");
+                            // Tier 2 returns freshly-generated URLs — skip reachability check.
+                            // The cloud resolver's proxy URLs consistently time out the probe (curl exit 28)
+                            // causing valid resolved URLs to cascade needlessly to slower tiers.
+                            _logger.Info("[" + ctx.CorrelationId + "] [Tier 2] Success in " + ms + "ms.");
                             result = url; activeTier = "tier2"; break;
                         }
                     }
@@ -384,6 +395,16 @@ public class ResolutionEngine
         args.Add("-f");
         args.Add(formatStr);
         _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1] Player=" + player + " Format=" + formatStr);
+
+        // Inject generic:impersonate when curl-impersonate is available.
+        // Required for CDN URLs protected by Cloudflare anti-bot (e.g. imvrcdn.com) — without this
+        // yt-dlp's generic extractor gets HTTP 403 and fails. The youtube extractor ignores this arg.
+        if (_curlClient?.IsAvailable == true)
+        {
+            args.Add("--extractor-args");
+            args.Add("generic:impersonate");
+            _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1] Injecting generic:impersonate (curl-impersonate available).");
+        }
 
         args.Add(url);
         return await RunYtDlp("yt-dlp.exe", args, ctx);

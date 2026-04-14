@@ -259,12 +259,12 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
             byte[] bytes = Encoding.UTF8.GetBytes(json);
             await _webSocket!.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
 
-            var timeoutTask = Task.Delay(20000);
+            var timeoutTask = Task.Delay(10000);
             var completed = await Task.WhenAny(tcs.Task, timeoutTask);
 
             if (completed == timeoutTask)
             {
-                _logger?.Warning(prefix + "Resolution timed out after 20s via " + _activeNodeId?.ToUpper() + " for: " + shortUrl);
+                _logger?.Warning(prefix + "Resolution timed out after 10s via " + _activeNodeId?.ToUpper() + " for: " + shortUrl);
                 _pendingRequests.TryRemove(requestId, out _);
                 return null;
             }
