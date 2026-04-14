@@ -25,6 +25,7 @@ class Program
     private static SettingsManager? _settings;
     private static Logger? _logger;
     private static ModuleCoordinator? _coordinator;
+    private static WhyKnotShareService? _shareService;
     private static bool _isWindowReady = false;
 
     [STAThread]
@@ -124,6 +125,18 @@ class Program
                     _logger?.Warning("RelayEvent send to UI failed: " + ex.Message, ex);
                 }
             }
+        };
+
+        _shareService = new WhyKnotShareService(_logger);
+
+        _shareService.OnPublicUrlReady += (publicUrl) => {
+            SendToUi("P2P_SHARE_STARTED", new { publicUrl });
+        };
+        _shareService.OnStopped += () => {
+            SendToUi("P2P_SHARE_STOPPED", null);
+        };
+        _shareService.OnError += (message) => {
+            SendToUi("P2P_SHARE_ERROR", new { message });
         };
 
         var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient, potProvider);
@@ -295,8 +308,21 @@ class Program
         } catch (Exception ex) {
             _logger?.Warning("Shutdown error: " + ex.Message, ex);
         }
+        _shareService?.Dispose();
         _coordinator?.Dispose();
         _logger?.Dispose();
+    }
+
+    private static void SendToUi(string type, object? data)
+    {
+        if (!_isWindowReady) return;
+        try {
+            _window?.Invoke(() => {
+                _window?.SendWebMessage(JsonSerializer.Serialize(new { type, data }));
+            });
+        } catch (Exception ex) {
+            _logger?.Warning("SendToUi '" + type + "' failed: " + ex.Message);
+        }
     }
 
     private static void SetupHostsBypass()
@@ -393,6 +419,17 @@ class Program
                             _logger?.Error("Failed to add firewall rule: " + ex.Message);
                         }
                     });
+                    break;
+                case "START_P2P_SHARE":
+                    if (root.TryGetProperty("data", out var shareData)) {
+                        string shareUrl = shareData.TryGetProperty("url", out var urlEl) ? urlEl.GetString() ?? "" : "";
+                        if (!string.IsNullOrEmpty(shareUrl)) {
+                            Task.Run(() => _shareService?.StartAsync(shareUrl));
+                        }
+                    }
+                    break;
+                case "STOP_P2P_SHARE":
+                    _shareService?.Stop();
                     break;
                 case "GET_HEALTH":
                     if (_coordinator != null)

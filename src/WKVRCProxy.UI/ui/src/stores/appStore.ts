@@ -98,6 +98,11 @@ export const useAppStore = defineStore('app', () => {
   
   const showHostsPrompt = ref(false)
   const relayEvents = ref<RelayEvent[]>([])
+
+  // P2P Share state
+  const p2pShareStatus = ref<'idle' | 'connecting' | 'active' | 'error'>('idle')
+  const p2pSharePublicUrl = ref('')
+  const p2pShareError = ref('')
   
   const isBridgeReady = ref(false)
   const version = ref('2026.4.14.0-883E')
@@ -117,6 +122,15 @@ export const useAppStore = defineStore('app', () => {
         status.value = parsed.data
       } else if (parsed.type === 'PROMPT_HOSTS_SETUP') {
         showHostsPrompt.value = true
+      } else if (parsed.type === 'P2P_SHARE_STARTED') {
+        p2pShareStatus.value = 'active'
+        p2pSharePublicUrl.value = parsed.data?.publicUrl ?? ''
+      } else if (parsed.type === 'P2P_SHARE_STOPPED') {
+        p2pShareStatus.value = 'idle'
+        p2pSharePublicUrl.value = ''
+      } else if (parsed.type === 'P2P_SHARE_ERROR') {
+        p2pShareStatus.value = 'error'
+        p2pShareError.value = parsed.data?.message ?? 'Unknown error'
       } else if (parsed.type === 'RELAY_EVENT') {
         const e = parsed.data as RelayEvent;
         const idx = relayEvents.value.findIndex(x => x.id === e.id);
@@ -191,6 +205,16 @@ export const useAppStore = defineStore('app', () => {
     logs.value = []
   }
 
+  function startP2PShare(url: string) {
+    p2pShareStatus.value = 'connecting'
+    p2pShareError.value = ''
+    sendMessage('START_P2P_SHARE', { url })
+  }
+
+  function stopP2PShare() {
+    sendMessage('STOP_P2P_SHARE')
+  }
+
   return {
     activeTab,
     logs,
@@ -213,7 +237,12 @@ export const useAppStore = defineStore('app', () => {
     liveStreamCount,
     totalBytesTransferred,
     clearHistory,
-    clearLogs
+    clearLogs,
+    p2pShareStatus,
+    p2pSharePublicUrl,
+    p2pShareError,
+    startP2PShare,
+    stopP2PShare
   }
 })
 

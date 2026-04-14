@@ -6,7 +6,7 @@ const appStore = useAppStore()
 const tabs = [
   { id: 'dashboard', label: 'Dashboard', icon: 'bi-grid-1x2-fill' },
   { id: 'history', label: 'History', icon: 'bi-collection-play-fill' },
-  { id: 'whyknot', label: 'whyknot.dev', icon: 'bi-globe' },
+  { id: 'share', label: 'Share', icon: 'bi-share-fill' },
   { id: 'relay', label: 'Traffic', icon: 'bi-arrow-left-right' },
   { id: 'logs', label: 'Logs', icon: 'bi-terminal-fill' },
   { id: 'settings', label: 'Settings', icon: 'bi-sliders' }

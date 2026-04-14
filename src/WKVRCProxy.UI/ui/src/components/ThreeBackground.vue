@@ -27,40 +27,6 @@ let mouseX = 0, mouseY = 0;
 const windowHalfX = window.innerWidth / 2;
 const windowHalfY = window.innerHeight / 2;
 
-const knotVertexShader = `
-  varying vec3 vNormal;
-  varying vec3 vViewPosition;
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    vNormal = normalize(normalMatrix * normal);
-    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-    vViewPosition = -mvPosition.xyz;
-    gl_Position = projectionMatrix * mvPosition;
-  }
-`;
-
-const knotFragmentShader = `
-  uniform float time;
-  uniform vec3 color;
-  uniform vec3 glowColor;
-  varying vec3 vNormal;
-  varying vec3 vViewPosition;
-  varying vec2 vUv;
-  void main() {
-    vec3 normal = normalize(vNormal);
-    vec3 viewDir = normalize(vViewPosition);
-    float fresnel = pow(1.0 - dot(viewDir, normal), 3.0);
-    vec3 baseColor = color * 0.25;
-    baseColor = mix(baseColor, glowColor * 0.5, fresnel);
-    float rim = pow(1.0 - max(dot(viewDir, normal), 0.0), 8.0);
-    baseColor += glowColor * rim * 1.2;
-    float pulse = sin(time * 0.3) * 0.04 + 0.08;
-    baseColor += glowColor * pulse;
-    gl_FragColor = vec4(baseColor, 0.25 + fresnel * 0.5);
-  }
-`;
-
 const starVertexShader = `
   attribute float size;
   attribute vec3 customColor;
@@ -167,18 +133,25 @@ const init = () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
   container.value.appendChild(renderer.domElement);
 
+  // Lights — scaled for the program's world units (camera at z=1200, knot radius 260)
+  const mainLight = new THREE.PointLight(0x3b82f6, 3.0);
+  mainLight.position.set(300, 300, 300);
+  scene.add(mainLight);
+  const secondaryLight = new THREE.PointLight(0x4ade80, 1.5);
+  secondaryLight.position.set(-300, -300, 300);
+  scene.add(secondaryLight);
+  scene.add(new THREE.AmbientLight(0x1a2035, 0.8));
+
   const knotGeo = new THREE.TorusKnotGeometry(260, 80, 250, 50, 2, 3);
-  const knotMat = new THREE.ShaderMaterial({
-    uniforms: {
-      time: { value: 0 },
-      color: { value: new THREE.Color(0x0a1025) },
-      glowColor: { value: new THREE.Color(0x3b82f6) }
-    },
-    vertexShader: knotVertexShader,
-    fragmentShader: knotFragmentShader,
+  const knotMat = new THREE.MeshPhysicalMaterial({
+    color: 0x3b82f6,
+    metalness: 0.9,
+    roughness: 0.1,
     transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
+    opacity: 0.6,
+    wireframe: true,
+    emissive: new THREE.Color(0x1d4ed8),
+    emissiveIntensity: 0.5
   });
   knotMesh = new THREE.Mesh(knotGeo, knotMat);
   knotMesh.position.x = 200; // Offset to the right
@@ -306,7 +279,6 @@ const animate = () => {
     knotMesh.rotation.z += 0.0005;
     knotMesh.rotation.x += (mouseY * 0.0002 - knotMesh.rotation.x) * 0.05;
     knotMesh.rotation.y += (mouseX * 0.0002 - knotMesh.rotation.y) * 0.05;
-    (knotMesh.material as any).uniforms.time.value = time;
   }
 
   if (starfieldSmall) {
@@ -349,6 +321,11 @@ onUnmounted(() => {
   cancelAnimationFrame(frameId);
   window.removeEventListener('resize', onWindowResize);
   document.removeEventListener('mousemove', onMouseMove);
+  if (knotMesh) {
+    knotMesh.geometry.dispose();
+    (knotMesh.material as THREE.MeshPhysicalMaterial).dispose();
+    knotMesh = null;
+  }
   if (nebulaMesh) {
     nebulaMesh.geometry.dispose();
     (nebulaMesh.material as THREE.ShaderMaterial).dispose();
