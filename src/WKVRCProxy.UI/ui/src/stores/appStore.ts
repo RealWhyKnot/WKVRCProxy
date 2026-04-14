@@ -105,7 +105,7 @@ export const useAppStore = defineStore('app', () => {
   const p2pShareError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.14.2-C5ED')
+  const version = ref('2026.4.14.3-F34F')
 
   function handleMessage(message: string) {
     try {
@@ -245,6 +245,7 @@ export const useAppStore = defineStore('app', () => {
     stopP2PShare
   }
 })
+
 
 
 

@@ -8,7 +8,6 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using M3U8Parser;
 using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 using WKVRCProxy.Core.Models;
@@ -130,82 +129,6 @@ public class RelayServer : IProxyModule, IDisposable
                     _logger?.Error("Relay Listen Loop Error: " + ex.Message, ex);
             }
         }
-    }
-
-    // Rewrite HLS manifest URLs so all segment, init-segment, key, rendition and I-frame
-    // playlist URIs route back through the relay. Uses M3U8Parser for full HLS spec coverage:
-    // - Master playlists: EXT-X-STREAM-INF (variants), EXT-X-MEDIA (audio/subtitle/CC renditions),
-    //   EXT-X-I-FRAME-STREAM-INF (I-frame playlists)
-    // - Media playlists: EXTINF segments, EXT-X-MAP (init segment), EXT-X-KEY (encryption keys)
-    private string RewriteHlsManifest(string manifest, string baseUrl, int relayPort)
-    {
-        Uri baseUri;
-        try { baseUri = new Uri(baseUrl); }
-        catch { return manifest; }
-
-        try
-        {
-            if (manifest.Contains("#EXT-X-STREAM-INF", StringComparison.OrdinalIgnoreCase))
-            {
-                // Master playlist — rewrite variant stream, EXT-X-MEDIA rendition, and I-frame URIs
-                var master = MasterPlaylist.LoadFromText(manifest);
-
-                for (int i = 0; i < master.Streams.Count; i++)
-                    if (!string.IsNullOrEmpty(master.Streams[i].Uri))
-                        master.Streams[i].Uri = RelayUrl(master.Streams[i].Uri, baseUri, relayPort);
-
-                // EXT-X-MEDIA: audio/subtitle renditions with external playlists
-                for (int i = 0; i < master.Medias.Count; i++)
-                    if (!string.IsNullOrEmpty(master.Medias[i].Uri))
-                        master.Medias[i].Uri = RelayUrl(master.Medias[i].Uri, baseUri, relayPort);
-
-                // EXT-X-I-FRAME-STREAM-INF: I-frame playlists for trick-play
-                for (int i = 0; i < master.IFrameStreams.Count; i++)
-                    if (!string.IsNullOrEmpty(master.IFrameStreams[i].Uri))
-                        master.IFrameStreams[i].Uri = RelayUrl(master.IFrameStreams[i].Uri, baseUri, relayPort);
-
-                return master.ToString();
-            }
-            else
-            {
-                // Media playlist — rewrite init segment, encryption keys, and segment URIs
-                var media = MediaPlaylist.LoadFromText(manifest);
-
-                if (media.Map != null && !string.IsNullOrEmpty(media.Map.Uri))
-                    media.Map.Uri = RelayUrl(media.Map.Uri, baseUri, relayPort);
-
-                foreach (var seg in media.MediaSegments)
-                {
-                    if (seg.Key != null && !string.IsNullOrEmpty(seg.Key.Uri))
-                        seg.Key.Uri = RelayUrl(seg.Key.Uri, baseUri, relayPort);
-
-                    foreach (var s in seg.Segments)
-                        if (!string.IsNullOrEmpty(s.Uri))
-                            s.Uri = RelayUrl(s.Uri, baseUri, relayPort);
-                }
-
-                return media.ToString();
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger?.Warning("[HLS] Manifest parse error — returning original unchanged: " + ex.Message);
-            return manifest;
-        }
-    }
-
-    private string RelayUrl(string url, Uri baseUri, int port)
-    {
-        string abs = MakeAbsoluteUrl(url, baseUri);
-        string encoded = WebUtility.UrlEncode(Convert.ToBase64String(Encoding.UTF8.GetBytes(abs)));
-        return "http://localhost.youtube.com:" + port + "/play?target=" + encoded;
-    }
-
-    private string MakeAbsoluteUrl(string url, Uri baseUri)
-    {
-        if (url.StartsWith("http://") || url.StartsWith("https://")) return url;
-        try { return new Uri(baseUri, url).ToString(); }
-        catch { return url; }
     }
 
     private async Task HandleRequestAsync(HttpListenerContext context)
@@ -360,6 +283,10 @@ public class RelayServer : IProxyModule, IDisposable
                     headerLines.RemoveAt(0);
                 }
 
+                bool curlContentTypeIsHls = false;
+                bool curlContentTypeObserved = false;
+                long? curlContentLength = null;
+
                 foreach (var headerLine in headerLines)
                 {
                     int idx = headerLine.IndexOf(':');
@@ -370,16 +297,16 @@ public class RelayServer : IProxyModule, IDisposable
 
                         if (key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
 
-                        // Detect HLS from Content-Type in curl response headers
                         if (key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
                         {
-                            if (value.Contains("mpegurl") || value.Contains("m3u8")) isHls = true;
+                            curlContentTypeObserved = true;
+                            curlContentTypeIsHls = value.Contains("mpegurl") || value.Contains("m3u8");
+                            if (curlContentTypeIsHls) isHls = true;
                         }
 
                         if (key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
                         {
-                            // Skip Content-Length for HLS — will be set to rewritten manifest size
-                            if (!isHls && long.TryParse(value, out long len)) context.Response.ContentLength64 = len;
+                            if (long.TryParse(value, out long len)) curlContentLength = len;
                             continue;
                         }
 
@@ -387,12 +314,18 @@ public class RelayServer : IProxyModule, IDisposable
                     }
                 }
 
+                // If Content-Type was present and explicitly says non-HLS, override the URL heuristic.
+                // This prevents binary segment data being treated as a manifest and corrupted.
+                if (curlContentTypeObserved && !curlContentTypeIsHls) isHls = false;
+                // Set Content-Length now that isHls is finalised (skipped for HLS — set from manifest size below).
+                if (!isHls && curlContentLength.HasValue) context.Response.ContentLength64 = curlContentLength.Value;
+
                 // For HLS via curl: read sourceStream as text, rewrite, serve rewritten bytes
                 if (isHls)
                 {
                     using var reader = new StreamReader(sourceStream, Encoding.UTF8);
                     string rawManifest = await reader.ReadToEndAsync();
-                    string rewritten = RewriteHlsManifest(rawManifest, targetUrl, _portManager!.CurrentPort);
+                    string rewritten = HlsManifestRewriter.Rewrite(rawManifest, targetUrl, _portManager!.CurrentPort, _logger);
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
                     try { context.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
@@ -427,6 +360,10 @@ public class RelayServer : IProxyModule, IDisposable
                     return;
                 }
 
+                bool httpContentTypeIsHls = false;
+                bool httpContentTypeObserved = false;
+                long? httpContentLength = null;
+
                 foreach (var header in response.Headers.Concat(response.Content.Headers))
                 {
                     string key = header.Key;
@@ -434,21 +371,27 @@ public class RelayServer : IProxyModule, IDisposable
 
                     if (key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
 
-                    // Detect HLS from Content-Type in response headers
                     if (key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (value.Contains("mpegurl") || value.Contains("m3u8")) isHls = true;
+                        httpContentTypeObserved = true;
+                        httpContentTypeIsHls = value.Contains("mpegurl") || value.Contains("m3u8");
+                        if (httpContentTypeIsHls) isHls = true;
                     }
 
                     if (key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
                     {
-                        // Skip Content-Length for HLS — will be set to rewritten manifest size
-                        if (!isHls && long.TryParse(value, out long len)) context.Response.ContentLength64 = len;
+                        if (long.TryParse(value, out long len)) httpContentLength = len;
                         continue;
                     }
 
                     try { context.Response.Headers.Add(key, value); } catch { }
                 }
+
+                // If Content-Type was present and explicitly says non-HLS, override the URL heuristic.
+                // This prevents binary segment data being treated as a manifest and corrupted.
+                if (httpContentTypeObserved && !httpContentTypeIsHls) isHls = false;
+                // Set Content-Length now that isHls is finalised (skipped for HLS — set from manifest size below).
+                if (!isHls && httpContentLength.HasValue) context.Response.ContentLength64 = httpContentLength.Value;
 
                 // For HLS responses: read manifest as text, rewrite all segment URLs through relay,
                 // then serve the rewritten content with correct Content-Length.
@@ -460,7 +403,7 @@ public class RelayServer : IProxyModule, IDisposable
                     _logger?.Debug("[" + ctx.CorrelationId + "] HLS manifest: " + rawManifest.Length + " chars, " + lineCount + " lines, valid=" + looksValid);
                     if (!looksValid)
                         _logger?.Warning("[" + ctx.CorrelationId + "] HLS manifest does not start with #EXTM3U — may be compressed or corrupt (first 100 bytes: " + rawManifest.Substring(0, Math.Min(100, rawManifest.Length)) + ")");
-                    string rewritten = RewriteHlsManifest(rawManifest, targetUrl, _portManager!.CurrentPort);
+                    string rewritten = HlsManifestRewriter.Rewrite(rawManifest, targetUrl, _portManager!.CurrentPort, _logger);
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
                     try { context.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
