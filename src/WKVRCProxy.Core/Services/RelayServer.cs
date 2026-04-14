@@ -198,6 +198,8 @@ public class RelayServer : IProxyModule, IDisposable
 
     private async Task HandleRequestAsync(HttpListenerContext context)
     {
+        Stream? sourceStream = null;
+        HttpResponseMessage? response = null;
         try
         {
             if (!context.Request.Url!.AbsolutePath.StartsWith("/play", StringComparison.OrdinalIgnoreCase))
@@ -292,9 +294,6 @@ public class RelayServer : IProxyModule, IDisposable
                 if (refUri.Host.EndsWith(uri.Host) || uri.Host.EndsWith(refUri.Host))
                     outboundRequest.Headers.Referrer = refUri;
             }
-
-            Stream? sourceStream = null;
-            HttpResponseMessage? response = null;
 
             if (rule.UseCurlImpersonate && _curlClient != null && _curlClient.IsAvailable)
             {
@@ -489,6 +488,8 @@ public class RelayServer : IProxyModule, IDisposable
         }
         finally
         {
+            try { sourceStream?.Dispose(); } catch { }
+            try { response?.Dispose(); } catch { }
             try { context.Response.Close(); } catch { }
         }
     }

@@ -21,8 +21,9 @@ class Program
     private static readonly string[] DefaultUrls =
     [
         "https://www.youtube.com/watch?v=jNQXAC9IVRw",         // YouTube VOD (Me at the zoo — always available)
-        "https://www.youtube.com/@nasa/live",                   // YouTube channel live stream
-        "https://www.twitch.tv/twitchgaming",                   // Twitch live stream
+        "https://www.youtube.com/@nasa/live",                   // YouTube channel live stream (Tier 0 eligible)
+        "https://www.twitch.tv/twitchgaming",                   // Twitch live stream (Tier 0 eligible)
+        "https://kick.com/kick",                                // Kick live stream (Tier 0 eligible; may not be live)
         "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",  // Public HLS test stream (Mux)
     ];
 

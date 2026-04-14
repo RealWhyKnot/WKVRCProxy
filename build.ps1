@@ -14,6 +14,7 @@ if (Test-Path $BuildDir) {
     Get-Process "redirector" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "bgutil-ytdlp-pot-provider" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "curl-impersonate-win" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process "streamlink" -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 1
 
     try {
@@ -26,7 +27,7 @@ New-Item -ItemType Directory $BuildDir -Force | Out-Null
 if (!(Test-Path $VendorDir)) { New-Item -ItemType Directory $VendorDir }
 
 # --- Dependency Tracking ---
-$Versions = @{ "ytdlp" = ""; "deno" = ""; "curlimp" = ""; "bgutil" = "" }
+$Versions = @{ "ytdlp" = ""; "deno" = ""; "curlimp" = ""; "bgutil" = ""; "streamlink" = "" }
 if (Test-Path $VersionFile) {
     $Versions = Get-Content $VersionFile | ConvertFrom-Json
 }
@@ -128,6 +129,51 @@ if ($BgutilRelease) {
     }
 }
 
+# 5. Fetch Latest Streamlink (Windows portable zip)
+$StreamlinkVendorDir = Join-Path $VendorDir "streamlink"
+try {
+    $StreamlinkRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/streamlink/streamlink/releases/latest" -ErrorAction Stop
+    $LatestStreamlinkVersion = $StreamlinkRelease.tag_name
+
+    if ($null -eq $Versions.psobject.properties['streamlink']) {
+        $Versions | Add-Member -NotePropertyName streamlink -NotePropertyValue ""
+    }
+
+    $SlExePath = Join-Path $StreamlinkVendorDir "bin\streamlink.exe"
+    if ($Versions.streamlink -ne $LatestStreamlinkVersion -or !(Test-Path $SlExePath)) {
+        Write-Host "Updating Streamlink to $LatestStreamlinkVersion..." -ForegroundColor Yellow
+        # Portable zip ships as streamlink-X.Y.Z-1-py3XX-x86_64.zip
+        $SlAsset = ($StreamlinkRelease.assets | Where-Object { $_.name -match "x86_64\.zip$" } | Select-Object -First 1)
+        if ($SlAsset) {
+            $ZipPath = Join-Path $VendorDir "streamlink.zip"
+            Invoke-WebRequest -Uri $SlAsset.browser_download_url -OutFile $ZipPath
+            $TempExtract = Join-Path $VendorDir "streamlink_extract"
+            if (Test-Path $TempExtract) { Remove-Item -Path $TempExtract -Recurse -Force }
+            Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
+            Remove-Item $ZipPath
+            # Zip extracts to a versioned subdir; move its contents to vendor/streamlink/
+            $ExtractedSubdir = Get-ChildItem -Path $TempExtract -Directory | Select-Object -First 1
+            if ($ExtractedSubdir) {
+                if (Test-Path $StreamlinkVendorDir) { Remove-Item -Path $StreamlinkVendorDir -Recurse -Force }
+                Move-Item -Path $ExtractedSubdir.FullName -Destination $StreamlinkVendorDir
+            }
+            Remove-Item -Path $TempExtract -Recurse -Force -ErrorAction SilentlyContinue
+            $Versions.streamlink = $LatestStreamlinkVersion
+            Write-Host "Streamlink $LatestStreamlinkVersion ready." -ForegroundColor Green
+        } else {
+            Write-Host "Warning: Streamlink x86_64 zip asset not found in release. Tier 0 resolution will be skipped." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Streamlink is up-to-date ($LatestStreamlinkVersion)." -ForegroundColor Green
+    }
+} catch {
+    if (Test-Path (Join-Path $StreamlinkVendorDir "bin\streamlink.exe")) {
+        Write-Host "Streamlink found in vendor/ (offline - could not check for updates)." -ForegroundColor Green
+    } else {
+        Write-Host "Warning: Could not fetch Streamlink release. Tier 0 live-stream resolution will be skipped." -ForegroundColor Yellow
+    }
+}
+
 $Versions | ConvertTo-Json | Out-File $VersionFile
 
 # --- Daily Versioning Logic ---
@@ -185,6 +231,10 @@ if (Test-Path (Join-Path $VendorDir "curl-impersonate-win.exe")) {
     Copy-Item (Join-Path $VendorDir "curl-impersonate-win.exe") (Join-Path $ToolsDir "curl-impersonate-win.exe")
 }
 Copy-Item (Join-Path $VendorDir "bgutil-ytdlp-pot-provider.exe") (Join-Path $ToolsDir "bgutil-ytdlp-pot-provider.exe")
+$StreamlinkVendorDir = Join-Path $VendorDir "streamlink"
+if (Test-Path $StreamlinkVendorDir) {
+    Copy-Item -Path $StreamlinkVendorDir -Destination (Join-Path $ToolsDir "streamlink") -Recurse -Force
+}
 
 # Cleanup
 Get-ChildItem -Path $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force

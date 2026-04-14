@@ -1,5 +1,6 @@
 using System;
 using System.Net;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -34,9 +35,19 @@ public class ResolutionEngine
 
     public event Action<string, object>? OnStatusUpdate;
     private int _activeResolutions = 0;
-    private readonly Dictionary<string, int> _tierCounts = new() {
-        { "tier1", 0 }, { "tier2", 0 }, { "tier3", 0 }, { "tier4", 0 }
-    };
+    private readonly ConcurrentDictionary<string, int> _tierCounts = new(
+        new[] {
+            new KeyValuePair<string, int>("tier0", 0),
+            new KeyValuePair<string, int>("tier1", 0),
+            new KeyValuePair<string, int>("tier2", 0),
+            new KeyValuePair<string, int>("tier3", 0),
+            new KeyValuePair<string, int>("tier4", 0)
+        });
+
+    // Persists which resolution tier last succeeded per domain+type ("youtube.com:vod", "twitch.tv:live").
+    // Loaded at startup, saved on each change, capped at 100 entries.
+    private readonly ConcurrentDictionary<string, TierMemoryEntry> _tierMemory = new();
+    private string _tierMemoryPath = "";
 
     public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager, PatcherService patcher, CurlImpersonateClient? curlClient = null, PotProviderService? potProvider = null)
     {
@@ -56,8 +67,11 @@ public class ResolutionEngine
         foreach (var entry in _settings.Config.History)
         {
             var tierKey = entry.Tier.Split('-')[0];
-            if (_tierCounts.ContainsKey(tierKey)) _tierCounts[tierKey]++;
+            _tierCounts.AddOrUpdate(tierKey, 1, (_, v) => v + 1);
         }
+
+        _tierMemoryPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tier_memory.json");
+        LoadTierMemory();
     }
 
     public void SetEventBus(SystemEventBus bus) { _eventBus = bus; }
@@ -153,6 +167,72 @@ public class ResolutionEngine
         }
     }
 
+    // Cache key: normalized domain + ":live" or ":vod".
+    // The live/vod split matters because YouTube and Twitch serve both — a yt-dlp format
+    // that works for VODs may not work for live HLS, and vice versa.
+    private static string TierMemoryKey(string url, bool isLive)
+    {
+        try
+        {
+            string host = new Uri(url).Host.ToLowerInvariant();
+            if (host.StartsWith("www.")) host = host.Substring(4);
+            return host + (isLive ? ":live" : ":vod");
+        }
+        catch { return ""; }
+    }
+
+    private void RecordTierSuccess(string memKey, string tier)
+    {
+        if (string.IsNullOrEmpty(memKey) || !_settings.Config.EnableTierMemory) return;
+        // Never persist Tier 4 passthrough — that's a failure-mode fallback, not a reliable path.
+        if (tier == "tier4" || tier.StartsWith("tier4-")) return;
+
+        _tierMemory.AddOrUpdate(memKey,
+            _ => new TierMemoryEntry { Tier = tier, SuccessCount = 1, LastSuccess = DateTime.Now },
+            (_, existing) => new TierMemoryEntry {
+                Tier = tier,
+                SuccessCount = existing.Tier == tier ? existing.SuccessCount + 1 : 1,
+                LastSuccess = DateTime.Now
+            });
+
+        // Evict oldest entry when over the 100-domain cap.
+        if (_tierMemory.Count > 100)
+        {
+            var oldest = _tierMemory.MinBy(kvp => kvp.Value.LastSuccess);
+            _tierMemory.TryRemove(oldest.Key, out _);
+        }
+
+        SaveTierMemory();
+    }
+
+    private void LoadTierMemory()
+    {
+        try
+        {
+            if (!File.Exists(_tierMemoryPath)) return;
+            string json = File.ReadAllText(_tierMemoryPath);
+            var loaded = JsonSerializer.Deserialize<Dictionary<string, TierMemoryEntry>>(json);
+            if (loaded == null) return;
+            foreach (var kvp in loaded) _tierMemory[kvp.Key] = kvp.Value;
+            _logger.Debug("[TierMemory] Loaded " + _tierMemory.Count + " domain entries.");
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning("[TierMemory] Failed to load tier_memory.json — starting fresh: " + ex.Message);
+        }
+    }
+
+    private void SaveTierMemory()
+    {
+        try
+        {
+            var dict = new Dictionary<string, TierMemoryEntry>(_tierMemory);
+            string json = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_tierMemoryPath, json);
+        }
+        catch (Exception ex) { _logger.Debug("[TierMemory] Failed to save tier_memory.json: " + ex.Message); }
+    }
+
     // Runs a tier resolver and measures how long it takes.
     private static async Task<(string? Url, long ElapsedMs)> TimedResolve(Func<Task<string?>> resolver)
     {
@@ -207,56 +287,128 @@ public class ResolutionEngine
                 }
                 var cascade = allTiers.Skip(startIdx).Where(t => !disabled.Contains(t)).ToList();
 
+                // Tier 0 gate: run --can-handle-url first (local plugin check, <500ms).
+                // Its result also serves as the "live vs vod" discriminator for the tier memory key.
+                bool isStreamlinkLive = !disabled.Contains("tier0") && await StreamlinkCanHandleUrlAsync(targetUrl, ctx);
+                string memKey = TierMemoryKey(targetUrl, isStreamlinkLive);
+
+                // Tier memory: look up the remembered winner for this domain+type.
+                TierMemoryEntry? remembered = null;
+                if (_settings.Config.EnableTierMemory && !string.IsNullOrEmpty(memKey))
+                {
+                    _tierMemory.TryGetValue(memKey, out remembered);
+                    if (remembered != null)
+                        _logger.Debug("[" + ctx.CorrelationId + "] [TierMemory] Remembered tier '" + remembered.Tier + "' for " + memKey + " (successes: " + remembered.SuccessCount + ").");
+                }
+
                 _logger.Info("[" + ctx.CorrelationId + "] Cascade: " + string.Join(" → ", cascade.Select(t => t.ToUpper())) +
                     (disabled.Count > 0 ? " (disabled: " + string.Join(", ", disabled) + ")" : ""));
 
-                foreach (var tier in cascade)
+                // Tier 0: Streamlink — live-stream fast-path, 9s resolution timeout.
+                // Skipped when tier memory already has a faster (tier1/2/3) winner for this domain.
+                if (isStreamlinkLive && !disabled.Contains("tier0"))
                 {
-                    if (tier == "tier1")
+                    bool tryStreamlink = remembered == null || remembered.Tier == "tier0";
+                    if (tryStreamlink)
                     {
-                        var (url, ms) = await TimedResolve(() => ResolveTier1(targetUrl, player, ctx));
-                        if (url == null)
+                        _logger.Debug("[" + ctx.CorrelationId + "] [Tier 0] Streamlink supports this URL — attempting resolution.");
+                        var (slUrl, slMs) = await TimedResolve(() => ResolveStreamlink(targetUrl, ctx));
+                        if (slUrl != null)
                         {
-                            _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1] yt-dlp returned no URL after " + ms + "ms — check stderr above for cause.");
+                            _logger.Info("[" + ctx.CorrelationId + "] [Tier 0] Streamlink success in " + slMs + "ms.");
+                            result = slUrl; activeTier = "tier0-streamlink";
+                            RecordTierSuccess(memKey, "tier0");
                         }
-                        else if (!await CheckUrlReachable(url, ctx))
+                        else if (remembered?.Tier == "tier0")
                         {
-                            _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1] URL resolved in " + ms + "ms but failed reachability check — cascading to next tier.");
+                            _logger.Warning("[" + ctx.CorrelationId + "] [TierMemory] Remembered tier 'tier0' failed for " + memKey + " — invalidating.");
+                            _tierMemory.TryRemove(memKey, out _); remembered = null;
                         }
                         else
                         {
-                            _logger.Info("[" + ctx.CorrelationId + "] [Tier 1] Success in" + ms + "ms.");
-                            result = url; activeTier = "tier1"; break;
+                            _logger.Debug("[" + ctx.CorrelationId + "] [Tier 0] Streamlink returned no URL after " + slMs + "ms — cascading.");
                         }
                     }
-                    else if (tier == "tier2")
+                }
+
+                // Tier 1-3 cascade — index-based loop so we can skip to the remembered tier
+                // and restart from position 0 if the remembered tier fails.
+                if (result == null)
+                {
+                    // Determine starting position: skip tiers before the remembered tier (if any).
+                    int cascadeStart = 0;
+                    if (remembered?.Tier != null && remembered.Tier != "tier0")
                     {
-                        var (url, ms) = await TimedResolve(() => ResolveTier2(targetUrl, player, ctx));
-                        if (url == null)
+                        int ri = cascade.IndexOf(remembered.Tier);
+                        if (ri > 0)
                         {
-                            _logger.Warning("[" + ctx.CorrelationId + "] [Tier 2] Cloud resolver returned no URL after " + ms + "ms.");
-                        }
-                        else
-                        {
-                            // Tier 2 returns freshly-generated URLs — skip reachability check.
-                            // The cloud resolver's proxy URLs consistently time out the probe (curl exit 28)
-                            // causing valid resolved URLs to cascade needlessly to slower tiers.
-                            _logger.Info("[" + ctx.CorrelationId + "] [Tier 2] Success in " + ms + "ms.");
-                            result = url; activeTier = "tier2"; break;
+                            cascadeStart = ri;
+                            _logger.Debug("[" + ctx.CorrelationId + "] [TierMemory] Jumping to remembered tier '" + remembered.Tier + "' (skipping " + ri + " earlier tier(s)).");
                         }
                     }
-                    else if (tier == "tier3")
+
+                    int i = cascadeStart;
+                    bool cascadeRestarted = false;
+                    while (i < cascade.Count && result == null)
                     {
-                        var (url, ms) = await TimedResolve(() => ResolveTier3(payload.Args, ctx));
-                        if (url == null)
+                        string tier = cascade[i];
+                        string? tierUrl = null;
+
+                        if (tier == "tier1")
                         {
-                            _logger.Warning("[" + ctx.CorrelationId + "] [Tier 3] yt-dlp-og returned no URL after " + ms + "ms.");
+                            var (url, ms) = await TimedResolve(() => ResolveTier1(targetUrl, player, ctx));
+                            if (url == null)
+                                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1] yt-dlp returned no URL after " + ms + "ms — check stderr above for cause.");
+                            else if (!await CheckUrlReachable(url, ctx))
+                                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1] URL resolved in " + ms + "ms but failed reachability check — cascading to next tier.");
+                            else
+                            {
+                                _logger.Info("[" + ctx.CorrelationId + "] [Tier 1] Success in " + ms + "ms.");
+                                tierUrl = url;
+                            }
                         }
-                        else
+                        else if (tier == "tier2")
                         {
-                            _logger.Info("[" + ctx.CorrelationId + "] [Tier 3] Success in" + ms + "ms.");
-                            result = url; activeTier = "tier3"; break;
+                            var (url, ms) = await TimedResolve(() => ResolveTier2(targetUrl, player, ctx));
+                            if (url == null)
+                                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 2] Cloud resolver returned no URL after " + ms + "ms.");
+                            else
+                            {
+                                // Tier 2 returns freshly-generated URLs — skip reachability check.
+                                // The cloud resolver's proxy URLs consistently time out the probe (curl exit 28)
+                                // causing valid resolved URLs to cascade needlessly to slower tiers.
+                                _logger.Info("[" + ctx.CorrelationId + "] [Tier 2] Success in " + ms + "ms.");
+                                tierUrl = url;
+                            }
                         }
+                        else if (tier == "tier3")
+                        {
+                            var (url, ms) = await TimedResolve(() => ResolveTier3(payload.Args, ctx));
+                            if (url == null)
+                                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 3] yt-dlp-og returned no URL after " + ms + "ms.");
+                            else
+                            {
+                                _logger.Info("[" + ctx.CorrelationId + "] [Tier 3] Success in " + ms + "ms.");
+                                tierUrl = url;
+                            }
+                        }
+
+                        if (tierUrl != null)
+                        {
+                            result = tierUrl; activeTier = tier;
+                            RecordTierSuccess(memKey, tier);
+                            break;
+                        }
+
+                        // Remembered tier failed — invalidate and restart from the top of the cascade.
+                        if (!cascadeRestarted && remembered != null && tier == remembered.Tier)
+                        {
+                            _logger.Warning("[" + ctx.CorrelationId + "] [TierMemory] Remembered tier '" + tier + "' failed for " + memKey + " — invalidating, retrying full cascade.");
+                            _tierMemory.TryRemove(memKey, out _); remembered = null; cascadeRestarted = true;
+                            i = 0; continue;
+                        }
+
+                        i++;
                     }
                 }
 
@@ -320,7 +472,7 @@ public class ResolutionEngine
         }
 
         var tierKey = activeTier.Split('-')[0];
-        if (_tierCounts.ContainsKey(tierKey)) _tierCounts[tierKey]++;
+        _tierCounts.AddOrUpdate(tierKey, 1, (_, v) => v + 1);
 
         var entry = new HistoryEntry {
             Timestamp = DateTime.Now,
@@ -489,10 +641,78 @@ public class ResolutionEngine
         return await RunYtDlp("yt-dlp-og.exe", args, ctx);
     }
 
+    // Asks Streamlink whether it has a plugin that handles the given URL.
+    // Uses `streamlink --can-handle-url <url>` which is a local plugin registry check —
+    // no network call, completes in <500ms. Exit code 0 means Streamlink supports the URL;
+    // non-zero means it doesn't. This is the authoritative gate for Tier 0: no hardcoded
+    // domain lists, no URL pattern matching — Streamlink's own registry decides.
+    private async Task<bool> StreamlinkCanHandleUrlAsync(string url, RequestContext ctx)
+    {
+        string path = GetBinaryPath("streamlink.exe");
+        if (!File.Exists(path)) return false; // Not installed — skip silently
+
+        try
+        {
+            using var process = new Process();
+            process.StartInfo.FileName = path;
+            process.StartInfo.ArgumentList.Add("--can-handle-url");
+            process.StartInfo.ArgumentList.Add(url);
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            process.StartInfo.CreateNoWindow = true;
+
+            process.Start();
+            ProcessGuard.Register(process);
+
+            // Drain stdout/stderr to prevent buffer deadlock — exit code is all we need.
+            // Suppress ObjectDisposedException if the process is killed on the timeout path.
+            _ = process.StandardOutput.ReadToEndAsync().ContinueWith(_ => { }, TaskContinuationOptions.OnlyOnFaulted);
+            _ = process.StandardError.ReadToEndAsync().ContinueWith(_ => { }, TaskContinuationOptions.OnlyOnFaulted);
+
+            var tcs = new TaskCompletionSource<int>();
+            _ = Task.Run(() => {
+                try { process.WaitForExit(); tcs.TrySetResult(process.ExitCode); }
+                catch (ObjectDisposedException) { tcs.TrySetResult(-1); }
+                catch (InvalidOperationException) { tcs.TrySetResult(-1); }
+            });
+
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(2000));
+            if (completed != tcs.Task)
+            {
+                try { process.Kill(); } catch { }
+                _logger.Debug("[" + ctx.CorrelationId + "] [Tier 0] --can-handle-url timed out — skipping Streamlink.");
+                return false;
+            }
+
+            return await tcs.Task == 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.Debug("[" + ctx.CorrelationId + "] [Tier 0] --can-handle-url error: " + ex.Message);
+            return false;
+        }
+    }
+
+    private async Task<string?> ResolveStreamlink(string url, RequestContext ctx)
+    {
+        _logger.Debug("[" + ctx.CorrelationId + "] [Tier 0] Attempting Streamlink resolution...");
+        var args = new List<string> { "--stream-url", "--quiet", url, "best" };
+        return await RunYtDlp("streamlink.exe", args, ctx, timeoutMs: 9000);
+    }
+
     // yt-dlp-og.exe lives in the VRChat Tools folder (created by PatcherService as a backup).
+    // streamlink.exe lives in tools/streamlink/bin/ (portable zip layout) or tools/streamlink/.
     // All other binaries (yt-dlp.exe, redirector.exe) live in dist/tools/.
     private string GetBinaryPath(string binary)
     {
+        if (binary == "streamlink.exe")
+        {
+            string slBase = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "streamlink");
+            string slBin = Path.Combine(slBase, "bin", binary);
+            if (File.Exists(slBin)) return slBin;
+            return Path.Combine(slBase, binary);
+        }
         if (binary == "yt-dlp-og.exe")
         {
             string? toolsDir = _patcher.VrcToolsDir;
@@ -505,7 +725,7 @@ public class ResolutionEngine
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", binary);
     }
 
-    private async Task<string?> RunYtDlp(string binary, List<string> args, RequestContext ctx)
+    private async Task<string?> RunYtDlp(string binary, List<string> args, RequestContext ctx, int timeoutMs = 15000)
     {
         string path = GetBinaryPath(binary);
         if (!File.Exists(path))
@@ -563,7 +783,7 @@ public class ResolutionEngine
                 tcs.TrySetResult(null);
             });
 
-            var timeoutTask = Task.Delay(15000);
+            var timeoutTask = Task.Delay(timeoutMs);
             var completed = await Task.WhenAny(tcs.Task, timeoutTask);
 
             // Log any stderr output regardless of whether it timed out or resolved
@@ -573,11 +793,11 @@ public class ResolutionEngine
 
             if (completed == timeoutTask)
             {
-                _logger.Warning("[" + ctx.CorrelationId + "] " + binary + " timed out after 15s.");
+                _logger.Warning("[" + ctx.CorrelationId + "] " + binary + " timed out after " + (timeoutMs / 1000) + "s.");
                 _eventBus?.PublishError("ResolutionEngine", new ErrorContext {
                     Category = ErrorCategory.ChildProcess,
                     Code = ErrorCodes.YTDLP_TIMEOUT,
-                    Summary = binary + " timed out after 15 seconds",
+                    Summary = binary + " timed out after " + (timeoutMs / 1000) + " seconds",
                     Detail = "The process did not produce a URL within the timeout window",
                     ActionHint = "The video source may be slow to respond. Try again or switch to a different tier.",
                     IsRecoverable = true
@@ -608,5 +828,12 @@ public class ResolutionEngine
             }, ctx.CorrelationId);
             return null;
         }
+    }
+
+    private class TierMemoryEntry
+    {
+        public string Tier { get; set; } = "";
+        public int SuccessCount { get; set; }
+        public DateTime LastSuccess { get; set; }
     }
 }

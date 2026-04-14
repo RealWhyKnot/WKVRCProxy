@@ -53,4 +53,7 @@ public class AppConfig
 
     [JsonPropertyName("disabledTiers")]
     public List<string> DisabledTiers { get; set; } = new();
+
+    [JsonPropertyName("enableTierMemory")]
+    public bool EnableTierMemory { get; set; } = true;
 }
