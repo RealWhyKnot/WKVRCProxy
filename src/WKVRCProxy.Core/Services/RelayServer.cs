@@ -8,6 +8,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using M3U8Parser;
 using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.Logging;
 using WKVRCProxy.Core.Models;
@@ -131,62 +132,73 @@ public class RelayServer : IProxyModule, IDisposable
         }
     }
 
-    // Rewrite HLS manifest lines so all segment and init-segment URLs route back through the relay.
-    // This ensures that all content (including HLS segments for live streams) is served through
-    // the relay, maintaining the localhost.youtube.com bypass for all requests the player makes.
+    // Rewrite HLS manifest URLs so all segment, init-segment, key, rendition and I-frame
+    // playlist URIs route back through the relay. Uses M3U8Parser for full HLS spec coverage:
+    // - Master playlists: EXT-X-STREAM-INF (variants), EXT-X-MEDIA (audio/subtitle/CC renditions),
+    //   EXT-X-I-FRAME-STREAM-INF (I-frame playlists)
+    // - Media playlists: EXTINF segments, EXT-X-MAP (init segment), EXT-X-KEY (encryption keys)
     private string RewriteHlsManifest(string manifest, string baseUrl, int relayPort)
     {
         Uri baseUri;
         try { baseUri = new Uri(baseUrl); }
         catch { return manifest; }
 
-        var sb = new StringBuilder();
-        string[] lines = manifest.Split('\n');
-
-        foreach (string rawLine in lines)
+        try
         {
-            string line = rawLine.TrimEnd('\r');
-
-            if (line.Length > 0 && !line.StartsWith("#"))
+            if (manifest.Contains("#EXT-X-STREAM-INF", StringComparison.OrdinalIgnoreCase))
             {
-                // Segment URL (relative or absolute) — rewrite through relay
-                string absUri = MakeAbsoluteUrl(line.Trim(), baseUri);
-                string encoded = WebUtility.UrlEncode(Convert.ToBase64String(Encoding.UTF8.GetBytes(absUri)));
-                line = "http://localhost.youtube.com:" + relayPort + "/play?target=" + encoded;
-            }
-            else if (line.StartsWith("#EXT-X-MAP:", StringComparison.OrdinalIgnoreCase) ||
-                     line.StartsWith("#EXT-X-KEY:", StringComparison.OrdinalIgnoreCase))
-            {
-                // Rewrite URI="..." attribute in MAP (init segment) and KEY (encryption key) tags.
-                // Use IndexOf to locate URI= regardless of attribute order, since the HLS spec allows
-                // attributes in any order (e.g. #EXT-X-KEY:METHOD=AES-128,URI="..." or
-                // #EXT-X-MAP:BYTERANGE="800@0",URI="...").
-                line = RewriteHlsTagUri(line, baseUri, relayPort);
-            }
+                // Master playlist — rewrite variant stream, EXT-X-MEDIA rendition, and I-frame URIs
+                var master = MasterPlaylist.LoadFromText(manifest);
 
-            sb.Append(line);
-            sb.Append('\n');
+                for (int i = 0; i < master.Streams.Count; i++)
+                    if (!string.IsNullOrEmpty(master.Streams[i].Uri))
+                        master.Streams[i].Uri = RelayUrl(master.Streams[i].Uri, baseUri, relayPort);
+
+                // EXT-X-MEDIA: audio/subtitle renditions with external playlists
+                for (int i = 0; i < master.Medias.Count; i++)
+                    if (!string.IsNullOrEmpty(master.Medias[i].Uri))
+                        master.Medias[i].Uri = RelayUrl(master.Medias[i].Uri, baseUri, relayPort);
+
+                // EXT-X-I-FRAME-STREAM-INF: I-frame playlists for trick-play
+                for (int i = 0; i < master.IFrameStreams.Count; i++)
+                    if (!string.IsNullOrEmpty(master.IFrameStreams[i].Uri))
+                        master.IFrameStreams[i].Uri = RelayUrl(master.IFrameStreams[i].Uri, baseUri, relayPort);
+
+                return master.ToString();
+            }
+            else
+            {
+                // Media playlist — rewrite init segment, encryption keys, and segment URIs
+                var media = MediaPlaylist.LoadFromText(manifest);
+
+                if (media.Map != null && !string.IsNullOrEmpty(media.Map.Uri))
+                    media.Map.Uri = RelayUrl(media.Map.Uri, baseUri, relayPort);
+
+                foreach (var seg in media.MediaSegments)
+                {
+                    if (seg.Key != null && !string.IsNullOrEmpty(seg.Key.Uri))
+                        seg.Key.Uri = RelayUrl(seg.Key.Uri, baseUri, relayPort);
+
+                    foreach (var s in seg.Segments)
+                        if (!string.IsNullOrEmpty(s.Uri))
+                            s.Uri = RelayUrl(s.Uri, baseUri, relayPort);
+                }
+
+                return media.ToString();
+            }
         }
-
-        return sb.ToString();
+        catch (Exception ex)
+        {
+            _logger?.Warning("[HLS] Manifest parse error — returning original unchanged: " + ex.Message);
+            return manifest;
+        }
     }
 
-    // Finds URI="..." anywhere in an HLS tag line and rewrites the URI through the relay.
-    private string RewriteHlsTagUri(string line, Uri baseUri, int relayPort)
+    private string RelayUrl(string url, Uri baseUri, int port)
     {
-        int uriAttrPos = line.IndexOf("URI=\"", StringComparison.OrdinalIgnoreCase);
-        if (uriAttrPos < 0) return line;
-
-        int valueStart = uriAttrPos + 5; // skip URI="
-        int valueEnd = line.IndexOf('"', valueStart);
-        if (valueEnd <= valueStart) return line;
-
-        string uri = line.Substring(valueStart, valueEnd - valueStart);
-        string absUri = MakeAbsoluteUrl(uri, baseUri);
-        string encoded = WebUtility.UrlEncode(Convert.ToBase64String(Encoding.UTF8.GetBytes(absUri)));
-        string relayed = "http://localhost.youtube.com:" + relayPort + "/play?target=" + encoded;
-
-        return line.Substring(0, valueStart) + relayed + line.Substring(valueEnd);
+        string abs = MakeAbsoluteUrl(url, baseUri);
+        string encoded = WebUtility.UrlEncode(Convert.ToBase64String(Encoding.UTF8.GetBytes(abs)));
+        return "http://localhost.youtube.com:" + port + "/play?target=" + encoded;
     }
 
     private string MakeAbsoluteUrl(string url, Uri baseUri)
