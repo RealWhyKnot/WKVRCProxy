@@ -122,9 +122,11 @@ public class RelayServer : IProxyModule, IDisposable
                 _ = Task.Run(() => HandleRequestAsync(context));
             }
             catch (HttpListenerException) { /* Ignored on closing */ }
+            catch (ObjectDisposedException) { /* Ignored on shutdown */ }
             catch (Exception ex)
             {
-                _logger?.Error("Relay Listen Loop Error: " + ex.Message, ex);
+                if (!_cts.IsCancellationRequested)
+                    _logger?.Error("Relay Listen Loop Error: " + ex.Message, ex);
             }
         }
     }

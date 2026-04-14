@@ -147,7 +147,11 @@ public class PotProviderService : IProxyModule, IDisposable
 
         try
         {
-            string url = "http://127.0.0.1:" + _port + "/get_pot";
+            // Use "localhost" rather than "127.0.0.1" so .NET's SocketsHttpHandler can
+            // try both IPv4 (127.0.0.1) and IPv6 (::1). bgutil's Deno HTTP server binds to
+            // [::]:PORT (IPv6 wildcard) which refuses pure-IPv4 connections on some Windows
+            // configurations; localhost lets the stack negotiate the right address family.
+            string url = "http://localhost:" + _port + "/get_pot";
             var payload = new
             {
                 client = "web.gvs",
