@@ -215,6 +215,7 @@ public class StrategyMemory
         }
         if (demoted)
             _logger?.Info("[StrategyMemory] Strategy '" + strategyName + "' for " + memKey + " demoted after " + threshold + " consecutive " + kind + " failure(s) — next request will re-cascade.");
+        EnforceCap();
         SaveAsync();
     }
 
@@ -238,27 +239,39 @@ public class StrategyMemory
 
     public void Load()
     {
-        try
+        // Try primary → .bak fallback. If the primary was corrupted (partial write from a process
+        // crash) the backup written before the last successful save is usually still intact.
+        foreach (string candidate in new[] { _path, _path + ".bak" })
         {
-            if (File.Exists(_path))
+            if (!File.Exists(candidate)) continue;
+            try
             {
-                string json = File.ReadAllText(_path);
+                string json = File.ReadAllText(candidate);
+                if (string.IsNullOrWhiteSpace(json)) continue;
                 var loaded = JsonSerializer.Deserialize<Dictionary<string, List<StrategyMemoryEntry>>>(json);
                 if (loaded != null)
                 {
                     foreach (var kvp in loaded)
                         _entries[kvp.Key] = kvp.Value ?? new List<StrategyMemoryEntry>();
-                    _logger?.Debug("[StrategyMemory] Loaded " + _entries.Count + " host entries.");
+                    if (candidate.EndsWith(".bak"))
+                        _logger?.Warning("[StrategyMemory] Primary file corrupt; recovered " + _entries.Count + " host entries from backup.");
+                    else
+                        _logger?.Debug("[StrategyMemory] Loaded " + _entries.Count + " host entries.");
                     return;
                 }
             }
-            // No strategy_memory.json — attempt migration from legacy tier_memory.json so existing
-            // users don't lose their learned tier rankings on upgrade.
-            MigrateFromLegacyTierMemory();
+            catch (Exception ex)
+            {
+                _logger?.Warning("[StrategyMemory] Failed to parse " + Path.GetFileName(candidate) + ": " + ex.Message + " — trying next source.");
+            }
         }
+        // Neither primary nor backup worked — attempt migration from legacy tier_memory.json so
+        // existing users don't lose their learned tier rankings on upgrade. Safe to call even if
+        // the legacy file is absent.
+        try { MigrateFromLegacyTierMemory(); }
         catch (Exception ex)
         {
-            _logger?.Warning("[StrategyMemory] Failed to load " + Path.GetFileName(_path) + " — starting fresh: " + ex.Message);
+            _logger?.Warning("[StrategyMemory] Starting fresh (no readable memory, migration failed): " + ex.Message);
         }
     }
 
@@ -316,10 +329,32 @@ public class StrategyMemory
                     lock (kvp.Value) return kvp.Value.ToList();
                 });
                 string json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(_path, json);
+
+                // Atomic-ish write: write to a sibling temp file, then move into place. Protects
+                // against torn writes if the process dies mid-save. Before the move, promote the
+                // current primary to .bak so Load() can recover if the move is itself interrupted.
+                string tmp = _path + ".tmp";
+                File.WriteAllText(tmp, json);
+                try
+                {
+                    if (File.Exists(_path))
+                    {
+                        string bak = _path + ".bak";
+                        try { if (File.Exists(bak)) File.Delete(bak); } catch { }
+                        try { File.Move(_path, bak); } catch { /* best-effort; still proceed */ }
+                    }
+                    File.Move(tmp, _path);
+                }
+                catch (Exception moveEx)
+                {
+                    // If the swap failed we at least still have the temp file on disk — try a
+                    // direct overwrite as the last-ditch fallback.
+                    try { File.Copy(tmp, _path, overwrite: true); File.Delete(tmp); }
+                    catch { _logger?.Warning("[StrategyMemory] Atomic save failed: " + moveEx.Message); }
+                }
             }
         }
-        catch (Exception ex) { _logger?.Debug("[StrategyMemory] Save failed: " + ex.Message); }
+        catch (Exception ex) { _logger?.Warning("[StrategyMemory] Save failed: " + ex.Message); }
     }
 
     private System.Threading.Tasks.Task? _pendingSave;
@@ -337,6 +372,17 @@ public class StrategyMemory
                 Save();
             });
         }
+    }
+
+    // Synchronous flush for shutdown: wait for any pending coalesced save to finish, then force one
+    // more synchronous save so the latest in-memory state is on disk. Process exits shouldn't lose
+    // the last few recorded successes/failures.
+    public void Flush()
+    {
+        System.Threading.Tasks.Task? pending;
+        lock (_pendingSaveLock) { pending = _pendingSave; }
+        try { pending?.Wait(TimeSpan.FromSeconds(2)); } catch { /* ignore: we're about to save anyway */ }
+        Save();
     }
 
     private void EnforceCap()

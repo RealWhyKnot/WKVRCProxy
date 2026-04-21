@@ -509,6 +509,60 @@ public class ResolutionEngine
                         }
                     }
 
+                    // Specific-strategy fast-path. Memory tracks strategy NAMES (e.g.
+                    // "tier1:browser-extract"), but the sequential cascade below only knows tier GROUPS
+                    // — it would run the tier's default recipe (ResolveTier1 etc.), which is a
+                    // completely different yt-dlp arg set from the remembered variant. That bug
+                    // previously caused a remembered "tier1:browser-extract" winner on YouTube to run
+                    // as "tier1:default", get bot-checked, and fall through to Tier 2 cloud. Look up
+                    // the exact strategy in the catalog and run it first with a soft deadline. On
+                    // failure, demote the specific entry and fall through to the cold race so the
+                    // dispatcher can rediscover a working variant.
+                    if (remembered != null && rememberedGroup != null && rememberedGroup != "tier0"
+                        && !disabled.Contains(rememberedGroup))
+                    {
+                        var catalogForFast = BuildColdRaceStrategies(targetUrl, player, payload.Args, disabled);
+                        var specific = catalogForFast.FirstOrDefault(s =>
+                            string.Equals(s.Name, remembered.StrategyName, StringComparison.OrdinalIgnoreCase));
+                        if (specific != null)
+                        {
+                            _logger.Info("[" + ctx.CorrelationId + "] [StrategyMemory] Fast-path: running remembered '"
+                                + specific.Name + "' (" + remembered.SuccessCount + "W/" + remembered.FailureCount + "L).");
+                            using var fastCts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(20));
+                            var fastSctx = new StrategyRunContext(targetUrl, player, payload.Args, ctx, floorH, fastCts.Token);
+                            var fastSw = Stopwatch.StartNew();
+                            YtDlpResult? fastRes = null;
+                            try { fastRes = await specific.Executor(fastSctx); }
+                            catch (Exception ex) { _logger.Debug("[" + ctx.CorrelationId + "] Fast-path '" + specific.Name + "' threw: " + ex.Message); }
+                            fastSw.Stop();
+                            if (fastRes != null && IsAcceptableQuality(fastRes.Height, floorH))
+                            {
+                                winnerResult = fastRes; activeTier = specific.Group; activeStrategy = specific.Name;
+                                winnerForcesRelayWrap = specific.ForceRelayWrap;
+                                _logger.Info("[" + ctx.CorrelationId + "] [StrategyMemory] Fast-path '" + specific.Name
+                                    + "' won in " + fastSw.ElapsedMilliseconds + "ms"
+                                    + (fastRes.Height is int fh ? " at " + fh + "p." : "."));
+                            }
+                            else
+                            {
+                                string reason = fastCts.IsCancellationRequested ? "timed out"
+                                    : (fastRes == null ? "no result" : "below floor (" + fastRes.Height + "p)");
+                                _logger.Warning("[" + ctx.CorrelationId + "] [StrategyMemory] Fast-path '" + specific.Name
+                                    + "' failed (" + reason + ") in " + fastSw.ElapsedMilliseconds + "ms — demoting and cold-racing.");
+                                RecordStrategyFailure(memKey, specific.Name);
+                                if (fastRes != null && (bestSoFar == null || (fastRes.Height ?? 0) > (bestSoFar.Height ?? 0)))
+                                { bestSoFar = fastRes; bestSoFarTier = specific.Name; }
+                                remembered = null; rememberedGroup = null;
+                                cascadeStart = 0; // re-enable cold race + full sequential cascade
+                            }
+                        }
+                        else
+                        {
+                            _logger.Debug("[" + ctx.CorrelationId + "] [StrategyMemory] Remembered strategy '"
+                                + remembered.StrategyName + "' not in current catalog — cold-racing instead.");
+                        }
+                    }
+
                     // Cold-start race: no memory, Tier 1 is first, Tier 2 is also active. Race every
                     // applicable Tier 1 variant plus Tier 2 in parallel — concurrency capped. First past
                     // the quality floor wins. Sub-floor results are kept as fallback. This is the
@@ -587,7 +641,10 @@ public class ResolutionEngine
                             _logger.Info("[" + ctx.CorrelationId + "] [" + tier + "] returned " + tierResult.Height + "p < " + floorH + "p floor — cascading to next tier for better quality.");
                             if (bestSoFar == null || (tierResult.Height ?? 0) > (bestSoFar.Height ?? 0))
                             {
-                                bestSoFar = tierResult; bestSoFarTier = tier;
+                                // Record the full strategy name (e.g. "tier2:cloud-whyknot"), not just "tier2".
+                                // The best-of fallback at the end of the cascade feeds this name into StrategyMemory —
+                                // using the group alone would synthesize a fake "tier2:default" entry that never ran.
+                                bestSoFar = tierResult; bestSoFarTier = tierStrategy;
                             }
                         }
                         else if (remembered != null && tier == rememberedGroup)

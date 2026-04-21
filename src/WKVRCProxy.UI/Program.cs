@@ -31,12 +31,55 @@ class Program
     private static BrowserExtractService? _browserExtractor;
     private static bool _isWindowReady = false;
 
+    // Single-instance guard. Held for the lifetime of the process; releasing it on shutdown
+    // lets a fresh instance start immediately. Local\ scope means per-Windows-session — a user
+    // logged in twice could still run two copies, but the common "clicked the shortcut twice"
+    // and "VRChat relaunched us" cases are both blocked.
+    private static Mutex? _singleInstanceMutex;
+    private const string SingleInstanceMutexName = "Local\\WKVRCProxy.UI.SingleInstance";
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    private const int SW_RESTORE = 9;
+
     [STAThread]
     static void Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--setup-hosts")
         {
             SetupHostsBypass();
+            return;
+        }
+
+        // Single-instance check BEFORE any state is touched. If a copy is already running,
+        // try to focus its window instead of silently exiting so the user understands why the
+        // second click "did nothing".
+        _singleInstanceMutex = new Mutex(true, SingleInstanceMutexName, out bool createdNew);
+        if (!createdNew)
+        {
+            try
+            {
+                var current = Process.GetCurrentProcess();
+                foreach (var p in Process.GetProcessesByName(current.ProcessName))
+                {
+                    if (p.Id == current.Id) continue;
+                    IntPtr h = p.MainWindowHandle;
+                    if (h != IntPtr.Zero)
+                    {
+                        ShowWindow(h, SW_RESTORE);
+                        SetForegroundWindow(h);
+                        break;
+                    }
+                }
+            }
+            catch { /* best-effort focus; any failure falls through to the message box */ }
+            MessageBox.Show(
+                "WKVRCProxy is already running.\n\nCheck your taskbar — the existing window has been brought to the front.",
+                "WKVRCProxy",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
             return;
         }
 
@@ -331,10 +374,20 @@ class Program
         } catch (Exception ex) {
             _logger?.Warning("Shutdown error: " + ex.Message, ex);
         }
+
+        // Flush bypass memory before the logger and resolver go away — coalesced saves may still
+        // be pending from the last few requests.
+        try { _resEngine?.StrategyMemory.Flush(); }
+        catch (Exception ex) { _logger?.Warning("StrategyMemory flush failed on shutdown: " + ex.Message); }
+
         _shareService?.Dispose();
         _browserExtractor?.Dispose();
         _coordinator?.Dispose();
         _logger?.Dispose();
+
+        // Release the single-instance mutex so the next launch can start immediately.
+        try { _singleInstanceMutex?.ReleaseMutex(); } catch { /* not held or already released */ }
+        _singleInstanceMutex?.Dispose();
     }
 
     private static void SendToUi(string type, object? data)
