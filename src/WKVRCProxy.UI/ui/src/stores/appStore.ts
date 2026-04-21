@@ -139,7 +139,7 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.21.0-77A8')
+  const version = ref('2026.4.21.4-8257')
 
   const bypassMemory = ref<BypassMemoryRow[]>([])
   const ytDlpUpdate = ref<YtDlpUpdateStatus>({
@@ -345,76 +345,5 @@ export const useAppStore = defineStore('app', () => {
     refreshYtDlpUpdate
   }
 })
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
