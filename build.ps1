@@ -338,15 +338,6 @@ $FullVersion | Set-Content -Path (Join-Path $PSScriptRoot "version.txt") -Encodi
 
 Write-Host "`nBuild $FullVersion Complete! Output in: $BuildDir" -ForegroundColor Green
 
-# --- Deploy Server ---
-$ServerScript = Join-Path (Split-Path $PSScriptRoot -Parent) "WhyKnot.dev\run.ps1"
-if (Test-Path $ServerScript) {
-    Write-Host "`n--- Deploying Server (both nodes) ---" -ForegroundColor Cyan
-    & $ServerScript -Action all
-} else {
-    Write-Host "Warning: Server deploy script not found at $ServerScript - skipping." -ForegroundColor Yellow
-}
-
 # --- Relaunch app if it was running before the build ---
 if ($WasRunning) {
     $ExePath = Join-Path $BuildDir "WKVRCProxy.exe"
