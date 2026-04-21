@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="M3U8Parser" Version="2.0.0" />
+    <PackageReference Include="PuppeteerSharp" Version="24.40.0" />
   </ItemGroup>
 
 </Project>

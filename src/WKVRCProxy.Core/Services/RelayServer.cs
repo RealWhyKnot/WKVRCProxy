@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -19,6 +20,7 @@ namespace WKVRCProxy.Core.Services;
 [DependsOn(typeof(ProxyRuleManager))]
 [DependsOn(typeof(CurlImpersonateClient))]
 [DependsOn(typeof(PotProviderService))]
+[DependsOn(typeof(BrowserSessionCache))]
 public class RelayServer : IProxyModule, IDisposable
 {
     public string Name => "RelayServer";
@@ -32,10 +34,33 @@ public class RelayServer : IProxyModule, IDisposable
     private ProxyRuleManager? _ruleManager;
     private CurlImpersonateClient? _curlClient;
     private PotProviderService? _potProvider;
+    private BrowserSessionCache? _browserSessionCache;
     private SystemEventBus? _eventBus;
     private readonly HttpClient _httpClient = new HttpClient(
         new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All }
     ) { Timeout = Timeout.InfiniteTimeSpan };
+
+    // Suppress repeated "Relaying:" INFO lines for the same target URL within a sliding window.
+    // Without this, a single playing video floods the log with 20+ identical lines per second
+    // as AVPro re-polls the manifest and fetches segments through the same proxy URL.
+    private readonly ConcurrentDictionary<string, DateTime> _recentlyLoggedTargets = new();
+    private static readonly TimeSpan LogDedupeWindow = TimeSpan.FromSeconds(30);
+
+    private bool ShouldLogRelay(string targetUrl)
+    {
+        var now = DateTime.UtcNow;
+        if (_recentlyLoggedTargets.TryGetValue(targetUrl, out var lastLogged) && now - lastLogged < LogDedupeWindow)
+            return false;
+        _recentlyLoggedTargets[targetUrl] = now;
+        // Opportunistic cleanup — keep dict from growing unboundedly over long sessions.
+        if (_recentlyLoggedTargets.Count > 256)
+        {
+            var cutoff = now - LogDedupeWindow;
+            foreach (var kv in _recentlyLoggedTargets)
+                if (kv.Value < cutoff) _recentlyLoggedTargets.TryRemove(kv.Key, out _);
+        }
+        return true;
+    }
 
     public Task InitializeAsync(IModuleContext context)
     {
@@ -48,6 +73,7 @@ public class RelayServer : IProxyModule, IDisposable
             _ruleManager = context.GetModule<ProxyRuleManager>();
             _curlClient = context.GetModule<CurlImpersonateClient>();
             _potProvider = context.GetModule<PotProviderService>();
+            try { _browserSessionCache = context.GetModule<BrowserSessionCache>(); } catch { /* optional — may not be registered if browser-extract disabled */ }
             _eventBus = context.EventBus;
 
             int attempts = 0;
@@ -160,10 +186,10 @@ public class RelayServer : IProxyModule, IDisposable
             // Truncate URLs in logs to keep them readable
             string shortUrl = targetUrl.Length > 120 ? targetUrl.Substring(0, 120) + "..." : targetUrl;
 
-            // Only log manifest/page requests, not per-segment binary relays (30+ per video = noise)
-            bool isPageRequest = targetUrl.Contains(".m3u8") || targetUrl.Contains("m3u8")
-                              || targetUrl.Contains("videoplayback") || targetUrl.Contains("/api/proxy");
-            if (isPageRequest)
+            // Only log the first relay of a given URL within the dedupe window. Manifests re-polled
+            // every few seconds and segment GETs that reuse /api/proxy?url= would otherwise flood
+            // the log. Upstream errors and manifest parse failures are still logged unconditionally below.
+            if (ShouldLogRelay(targetUrl))
                 _logger?.Info("[" + ctx.CorrelationId + "] Relaying: " + shortUrl);
 
             var relayEvent = new RelayEvent {
@@ -199,17 +225,21 @@ public class RelayServer : IProxyModule, IDisposable
 
             foreach (string? key in context.Request.Headers.AllKeys)
             {
-                if (key != null && rule.ForwardHeaders.Contains(key))
+                if (key != null && rule.ForwardHeaders.Any(h => string.Equals(h, key, StringComparison.OrdinalIgnoreCase)))
                 {
                     outboundRequest.Headers.TryAddWithoutValidation(key, context.Request.Headers[key]);
                 }
             }
 
+            // UA precedence: explicit rule override > client-forwarded UA > Mozilla fallback.
+            // Preserving the client UA matters for "VRChat movie world" hosts (vr-m.net etc.) that
+            // only serve clients whose UA identifies as AVPro/UnityPlayer.
             if (!string.IsNullOrEmpty(rule.OverrideUserAgent))
             {
+                outboundRequest.Headers.Remove("User-Agent");
                 outboundRequest.Headers.UserAgent.ParseAdd(rule.OverrideUserAgent);
             }
-            else
+            else if (!outboundRequest.Headers.TryGetValues("User-Agent", out _))
             {
                 outboundRequest.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
             }
@@ -228,6 +258,47 @@ public class RelayServer : IProxyModule, IDisposable
                 var refUri = new Uri(context.Request.Headers["Referer"]!);
                 if (refUri.Host.EndsWith(uri.Host) || uri.Host.EndsWith(refUri.Host))
                     outboundRequest.Headers.Referrer = refUri;
+            }
+
+            // Apply per-rule static header injections. Empty string value = strip the header. Any
+            // other value replaces whatever was previously forwarded / set by UA/Referer logic.
+            // Content-* headers go on the content (if any); everything else on the request.
+            foreach (var kvp in rule.InjectHeaders)
+            {
+                if (string.IsNullOrEmpty(kvp.Key)) continue;
+                outboundRequest.Headers.Remove(kvp.Key);
+                if (!string.IsNullOrEmpty(kvp.Value))
+                {
+                    if (!outboundRequest.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value))
+                    {
+                        // Some headers (Content-Type etc.) belong on HttpContent, not the request.
+                        // Log at debug and skip; rare enough that we don't need a full content-builder here.
+                        _logger?.Debug("[Relay] Skipped injecting header '" + kvp.Key + "' — not a valid request header (content header?).");
+                    }
+                }
+            }
+
+            // Browser-session replay: if BrowserExtractService captured a session for this host, replay
+            // its exact cookies and headers on every outbound request. Captured headers take precedence
+            // over rule-injected ones (browser is the source of truth for fingerprint-gated origins).
+            // Keyed by bare host so the session survives manifest-path changes.
+            string relayHost = BrowserSessionCache.HostFromUrl(targetUrl);
+            BrowserSession? session = _browserSessionCache?.Get(relayHost);
+            if (session != null)
+            {
+                foreach (var kvp in session.Headers)
+                {
+                    if (string.IsNullOrEmpty(kvp.Key)) continue;
+                    outboundRequest.Headers.Remove(kvp.Key);
+                    if (!outboundRequest.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value))
+                        _logger?.Debug("[" + ctx.CorrelationId + "] [Relay] Session header '" + kvp.Key + "' could not be added to request (content header?).");
+                }
+                if (!string.IsNullOrEmpty(session.CookieHeader))
+                {
+                    outboundRequest.Headers.Remove("Cookie");
+                    outboundRequest.Headers.TryAddWithoutValidation("Cookie", session.CookieHeader);
+                }
+                _logger?.Debug("[" + ctx.CorrelationId + "] [Relay] Applied captured browser session for " + relayHost + " (" + session.Headers.Count + " headers, cookie " + (string.IsNullOrEmpty(session.CookieHeader) ? "empty" : session.CookieHeader.Length + " chars") + ").");
             }
 
             if (rule.UseCurlImpersonate && _curlClient != null && _curlClient.IsAvailable)
@@ -279,6 +350,12 @@ public class RelayServer : IProxyModule, IDisposable
                     if (parts.Length >= 2 && int.TryParse(parts[1], out int sc))
                     {
                         context.Response.StatusCode = sc;
+                        // Mirror the HttpClient-path invalidation: 401/403/429 = browser session stale.
+                        if ((sc == 401 || sc == 403 || sc == 429) && session != null && _browserSessionCache != null)
+                        {
+                            _browserSessionCache.Invalidate(relayHost);
+                            _logger?.Info("[" + ctx.CorrelationId + "] [Relay] Invalidated browser session for " + relayHost + " after upstream " + sc + " (curl path).");
+                        }
                     }
                     headerLines.RemoveAt(0);
                 }
@@ -344,13 +421,19 @@ public class RelayServer : IProxyModule, IDisposable
 
                 int upstreamStatus = (int)response.StatusCode;
                 context.Response.StatusCode = upstreamStatus;
-                if (isPageRequest)
-                    _logger?.Debug("[" + ctx.CorrelationId + "] Upstream responded: " + upstreamStatus + (isHls ? " (HLS)" : ""));
+                // 2xx responses are routine; only surface non-success statuses (handled below as warnings).
 
                 // If upstream returned an error, pass it through without HLS rewriting
                 if (upstreamStatus >= 400)
                 {
                     _logger?.Warning("[" + ctx.CorrelationId + "] Upstream error " + upstreamStatus + " for " + shortUrl);
+                    // 401/403/429 = captured browser session no longer valid (cookie expired, IP flagged).
+                    // Invalidate so the next resolve re-runs the browser and captures a fresh session.
+                    if ((upstreamStatus == 401 || upstreamStatus == 403 || upstreamStatus == 429) && session != null && _browserSessionCache != null)
+                    {
+                        _browserSessionCache.Invalidate(relayHost);
+                        _logger?.Info("[" + ctx.CorrelationId + "] [Relay] Invalidated browser session for " + relayHost + " after upstream " + upstreamStatus + ".");
+                    }
                     string errorBody = await response.Content.ReadAsStringAsync();
                     byte[] errorBytes = Encoding.UTF8.GetBytes(errorBody);
                     context.Response.ContentLength64 = errorBytes.Length;
@@ -399,8 +482,6 @@ public class RelayServer : IProxyModule, IDisposable
                 {
                     string rawManifest = await response.Content.ReadAsStringAsync();
                     bool looksValid = rawManifest.TrimStart().StartsWith("#EXTM3U");
-                    int lineCount = rawManifest.Split('\n').Length;
-                    _logger?.Debug("[" + ctx.CorrelationId + "] HLS manifest: " + rawManifest.Length + " chars, " + lineCount + " lines, valid=" + looksValid);
                     if (!looksValid)
                         _logger?.Warning("[" + ctx.CorrelationId + "] HLS manifest does not start with #EXTM3U — may be compressed or corrupt (first 100 bytes: " + rawManifest.Substring(0, Math.Min(100, rawManifest.Length)) + ")");
                     string rewritten = HlsManifestRewriter.Rewrite(rawManifest, targetUrl, _portManager!.CurrentPort, _logger);

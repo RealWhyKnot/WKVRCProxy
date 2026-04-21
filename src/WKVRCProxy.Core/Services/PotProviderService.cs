@@ -22,7 +22,9 @@ public class PotProviderService : IProxyModule, IDisposable
     private Logger? _logger;
     private Process? _providerProcess;
     private int _port = 0;
-    private readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+    // bgutil sidecar token generation takes 8-15s on fresh cache (it spins up an internal session).
+    // Prior 10s timeout was killing valid requests that would have completed within 1-2s.
+    private readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(25) };
     
     // Cache: VideoId -> (Token, Expiry)
     private readonly ConcurrentDictionary<string, (string token, DateTime expires)> _tokenCache = new();

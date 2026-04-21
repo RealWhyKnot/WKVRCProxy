@@ -33,6 +33,9 @@ export interface HistoryEntry {
   Success: boolean;
   IsLive: boolean;
   StreamType: string; // "live" | "vod" | "unknown"
+  ResolutionHeight?: number | null;
+  ResolutionWidth?: number | null;
+  Vcodec?: string | null;
 }
 
 export interface AppConfig {
@@ -47,6 +50,30 @@ export interface AppConfig {
   bypassHostsSetupDeclined?: boolean;
   enableRelayBypass: boolean;
   disabledTiers: string[];
+  autoUpdateYtDlp?: boolean;
+}
+
+export interface BypassMemoryEntry {
+  strategy: string;
+  successCount: number;
+  failureCount: number;
+  consecutiveFailures: number;
+  netScore: number;
+  lastSuccess: string;
+  lastFailure: string | null;
+  firstSeen: string;
+}
+
+export interface BypassMemoryRow {
+  key: string;
+  entries: BypassMemoryEntry[];
+}
+
+export interface YtDlpUpdateStatus {
+  status: 'Idle' | 'Checking' | 'UpToDate' | 'UpdateAvailable' | 'Downloading' | 'Updated' | 'Failed' | 'Disabled';
+  detail: string;
+  localVersion: string;
+  remoteVersion: string;
 }
 
 export interface AppStatus {
@@ -103,9 +130,24 @@ export const useAppStore = defineStore('app', () => {
   const p2pShareStatus = ref<'idle' | 'connecting' | 'active' | 'error'>('idle')
   const p2pSharePublicUrl = ref('')
   const p2pShareError = ref('')
+
+  // Cloud Resolve state (for Share panel — resolves user-pasted URLs to direct CDN URL)
+  const cloudResolveStatus = ref<'idle' | 'resolving' | 'ready' | 'error'>('idle')
+  const cloudResolvedUrl = ref('')
+  const cloudResolveTier = ref('')
+  const cloudResolveHeight = ref<number | null>(null)
+  const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.14.3-F34F')
+  const version = ref('2026.4.18.4-B60B')
+
+  const bypassMemory = ref<BypassMemoryRow[]>([])
+  const ytDlpUpdate = ref<YtDlpUpdateStatus>({
+    status: 'Idle',
+    detail: '',
+    localVersion: '',
+    remoteVersion: ''
+  })
 
   function handleMessage(message: string) {
     try {
@@ -131,6 +173,17 @@ export const useAppStore = defineStore('app', () => {
       } else if (parsed.type === 'P2P_SHARE_ERROR') {
         p2pShareStatus.value = 'error'
         p2pShareError.value = parsed.data?.message ?? 'Unknown error'
+      } else if (parsed.type === 'CLOUD_RESOLVE_RESULT') {
+        if (parsed.data?.success) {
+          cloudResolveStatus.value = 'ready'
+          cloudResolvedUrl.value = parsed.data.url ?? ''
+          cloudResolveTier.value = parsed.data.tier ?? ''
+          cloudResolveHeight.value = parsed.data.height ?? null
+          cloudResolveError.value = ''
+        } else {
+          cloudResolveStatus.value = 'error'
+          cloudResolveError.value = parsed.data?.message ?? 'Resolve failed'
+        }
       } else if (parsed.type === 'RELAY_EVENT') {
         const e = parsed.data as RelayEvent;
         const idx = relayEvents.value.findIndex(x => x.id === e.id);
@@ -140,6 +193,10 @@ export const useAppStore = defineStore('app', () => {
           relayEvents.value.unshift(e);
           if (relayEvents.value.length > 100) relayEvents.value.pop();
         }
+      } else if (parsed.type === 'BYPASS_MEMORY') {
+        bypassMemory.value = (parsed.data ?? []) as BypassMemoryRow[]
+      } else if (parsed.type === 'YTDLP_UPDATE') {
+        ytDlpUpdate.value = parsed.data as YtDlpUpdateStatus
       }
     } catch (e) { }
   }
@@ -159,6 +216,8 @@ export const useAppStore = defineStore('app', () => {
       window.photino.receiveMessage(handleMessage)
       sendMessage('SYNC_LOGS')
       sendMessage('GET_CONFIG')
+      sendMessage('GET_BYPASS_MEMORY')
+      sendMessage('GET_YTDLP_UPDATE')
       isBridgeReady.value = true
       return true
     }
@@ -215,6 +274,35 @@ export const useAppStore = defineStore('app', () => {
     sendMessage('STOP_P2P_SHARE')
   }
 
+  function requestCloudResolve(url: string) {
+    cloudResolveStatus.value = 'resolving'
+    cloudResolvedUrl.value = ''
+    cloudResolveTier.value = ''
+    cloudResolveHeight.value = null
+    cloudResolveError.value = ''
+    sendMessage('REQUEST_CLOUD_RESOLVE', { url })
+  }
+
+  function resetCloudResolve() {
+    cloudResolveStatus.value = 'idle'
+    cloudResolvedUrl.value = ''
+    cloudResolveTier.value = ''
+    cloudResolveHeight.value = null
+    cloudResolveError.value = ''
+  }
+
+  function refreshBypassMemory() {
+    sendMessage('GET_BYPASS_MEMORY')
+  }
+
+  function forgetBypassKey(key: string) {
+    sendMessage('FORGET_BYPASS_KEY', { key })
+  }
+
+  function refreshYtDlpUpdate() {
+    sendMessage('GET_YTDLP_UPDATE')
+  }
+
   return {
     activeTab,
     logs,
@@ -242,9 +330,26 @@ export const useAppStore = defineStore('app', () => {
     p2pSharePublicUrl,
     p2pShareError,
     startP2PShare,
-    stopP2PShare
+    stopP2PShare,
+    cloudResolveStatus,
+    cloudResolvedUrl,
+    cloudResolveTier,
+    cloudResolveHeight,
+    cloudResolveError,
+    requestCloudResolve,
+    resetCloudResolve,
+    bypassMemory,
+    ytDlpUpdate,
+    refreshBypassMemory,
+    forgetBypassKey,
+    refreshYtDlpUpdate
   }
 })
+
+
+
+
+
 
 
 

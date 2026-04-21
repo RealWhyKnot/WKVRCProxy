@@ -17,8 +17,9 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
 {
     public string Name => "Tier2Client";
     private Logger? _logger;
+    private SettingsManager? _settings;
     private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(5) };
-    
+
     private readonly List<(string Id, string Url)> _nodes = new()
     {
         ("node1", "https://node1.whyknot.dev"),
@@ -42,6 +43,7 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
+        _settings = context.Settings;
         Task.Run(MaintainConnection);
         return Task.CompletedTask;
     }
@@ -259,12 +261,13 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
             byte[] bytes = Encoding.UTF8.GetBytes(json);
             await _webSocket!.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
 
-            var timeoutTask = Task.Delay(10000);
+            int timeoutSeconds = Math.Max(5, _settings?.Config.Tier2TimeoutSeconds ?? 60);
+            var timeoutTask = Task.Delay(timeoutSeconds * 1000);
             var completed = await Task.WhenAny(tcs.Task, timeoutTask);
 
             if (completed == timeoutTask)
             {
-                _logger?.Warning(prefix + "Resolution timed out after 10s via " + _activeNodeId?.ToUpper() + " for: " + shortUrl);
+                _logger?.Warning(prefix + "Resolution timed out after " + timeoutSeconds + "s via " + _activeNodeId?.ToUpper() + " for: " + shortUrl);
                 _pendingRequests.TryRemove(requestId, out _);
                 return null;
             }

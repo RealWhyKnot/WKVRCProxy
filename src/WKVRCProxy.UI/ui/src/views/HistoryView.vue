@@ -115,6 +115,7 @@ function truncate(str: string, len: number) {
             <th class="px-6 py-4">Source URL</th>
             <th class="px-6 py-4">Tier</th>
             <th class="px-6 py-4">Type</th>
+            <th class="px-6 py-4">Resolution</th>
             <th class="px-6 py-4 text-right">Result</th>
           </tr>
         </thead>
@@ -141,6 +142,16 @@ function truncate(str: string, len: number) {
               </span>
               <span v-else class="px-3 py-1 bg-white/5 rounded-lg text-[8px] font-black uppercase border border-white/5 text-white/45 italic">VOD</span>
             </td>
+            <td class="px-6 py-4">
+              <span v-if="entry.ResolutionHeight" :title="entry.ResolutionWidth && entry.ResolutionHeight ? (entry.ResolutionWidth + 'x' + entry.ResolutionHeight + (entry.Vcodec ? ' ' + entry.Vcodec : '')) : undefined"
+                    class="px-3 py-1 rounded-lg text-[8px] font-black uppercase border italic tabular-nums"
+                    :class="entry.ResolutionHeight >= 1080 ? 'bg-blue-500/15 border-blue-500/25 text-blue-400'
+                          : entry.ResolutionHeight >= 720  ? 'bg-emerald-500/15 border-emerald-500/25 text-emerald-400'
+                          : 'bg-amber-500/15 border-amber-500/25 text-amber-400'">
+                {{ entry.ResolutionHeight }}p
+              </span>
+              <span v-else class="text-white/25 font-mono text-[9px]">—</span>
+            </td>
             <td class="px-6 py-4 text-right">
               <span :class="entry.Success ? 'text-emerald-400' : 'text-red-400'" class="font-black italic text-[9px]">
                 {{ entry.Success ? 'OK' : 'FAILED' }}
@@ -149,7 +160,7 @@ function truncate(str: string, len: number) {
           </tr>
           <!-- Empty state -->
           <tr v-if="filteredHistory.length === 0 && totalCount === 0">
-            <td colspan="5" class="px-6 py-24 text-center">
+            <td colspan="6" class="px-6 py-24 text-center">
               <div class="flex flex-col items-center gap-4 animate-pulse">
                 <i class="bi bi-clock-history text-4xl text-white/10"></i>
                 <div class="space-y-2">
@@ -160,7 +171,7 @@ function truncate(str: string, len: number) {
             </td>
           </tr>
           <tr v-else-if="filteredHistory.length === 0">
-            <td colspan="5" class="px-6 py-16 text-center">
+            <td colspan="6" class="px-6 py-16 text-center">
               <div class="flex flex-col items-center gap-3">
                 <i class="bi bi-funnel text-2xl text-white/10"></i>
                 <p class="text-white/25 font-black uppercase tracking-[0.3em] italic text-[9px]">No entries match current filters</p>

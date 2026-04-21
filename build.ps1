@@ -5,9 +5,12 @@ $VendorDir = Join-Path $PSScriptRoot "vendor"
 $VersionFile = Join-Path $VendorDir "versions.json"
 $LocalVersionState = Join-Path $VendorDir "local_build_state.json"
 
-if (Test-Path $BuildDir) { 
+$WasRunning = ($null -ne (Get-Process "WKVRCProxy" -ErrorAction SilentlyContinue)) -or
+              ($null -ne (Get-Process "WKVRCProxy.UI" -ErrorAction SilentlyContinue))
+
+if (Test-Path $BuildDir) {
     Write-Host "Cleaning dist folder..." -ForegroundColor Cyan
-    
+
     # Terminate running instances to release file locks
     Get-Process "WKVRCProxy.UI" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "WKVRCProxy" -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -174,6 +177,84 @@ try {
     }
 }
 
+# 6. Fetch Latest wgcf (ViRb3/wgcf) — Cloudflare WARP account registration + config generator.
+$WgcfVendorPath = Join-Path $VendorDir "wgcf.exe"
+try {
+    $WgcfRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ViRb3/wgcf/releases/latest" -ErrorAction Stop
+    $LatestWgcfVersion = $WgcfRelease.tag_name
+    if ($null -eq $Versions.psobject.properties['wgcf']) {
+        $Versions | Add-Member -NotePropertyName wgcf -NotePropertyValue ""
+    }
+    if ($Versions.wgcf -ne $LatestWgcfVersion -or !(Test-Path $WgcfVendorPath)) {
+        Write-Host "Updating wgcf to $LatestWgcfVersion..." -ForegroundColor Yellow
+        # Pick the windows amd64 asset — release asset naming uses wgcf_<ver>_windows_amd64.exe
+        $WgcfAsset = ($WgcfRelease.assets | Where-Object { $_.name -match "windows_amd64\.exe$" } | Select-Object -First 1)
+        if ($WgcfAsset) {
+            Invoke-WebRequest -Uri $WgcfAsset.browser_download_url -OutFile $WgcfVendorPath
+            $Versions.wgcf = $LatestWgcfVersion
+            Write-Host "wgcf.exe ready ($LatestWgcfVersion)." -ForegroundColor Green
+        } else {
+            Write-Host "Warning: wgcf windows_amd64 asset not found in release. WARP disabled in this build." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "wgcf.exe is up-to-date ($LatestWgcfVersion)." -ForegroundColor Green
+    }
+} catch {
+    if (Test-Path $WgcfVendorPath) {
+        Write-Host "wgcf.exe found in vendor/ (offline - could not check for updates)." -ForegroundColor Green
+    } else {
+        Write-Host "Note: Could not fetch wgcf release. WARP will be disabled unless users drop wgcf.exe into tools/warp/." -ForegroundColor Yellow
+    }
+}
+
+# 7. Fetch Latest wireproxy (pufferffish/wireproxy) — user-space WG → SOCKS5 bridge. No TUN, no admin.
+$WireproxyVendorPath = Join-Path $VendorDir "wireproxy.exe"
+try {
+    $WireproxyRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/pufferffish/wireproxy/releases/latest" -ErrorAction Stop
+    $LatestWireproxyVersion = $WireproxyRelease.tag_name
+    if ($null -eq $Versions.psobject.properties['wireproxy']) {
+        $Versions | Add-Member -NotePropertyName wireproxy -NotePropertyValue ""
+    }
+    if ($Versions.wireproxy -ne $LatestWireproxyVersion -or !(Test-Path $WireproxyVendorPath)) {
+        Write-Host "Updating wireproxy to $LatestWireproxyVersion..." -ForegroundColor Yellow
+        # Pick the windows amd64 asset — release naming varies; match broadly.
+        $WpAsset = ($WireproxyRelease.assets | Where-Object { $_.name -match "windows.*amd64" -and $_.name -match "\.zip$" } | Select-Object -First 1)
+        if ($WpAsset) {
+            $ZipPath = Join-Path $VendorDir "wireproxy.zip"
+            Invoke-WebRequest -Uri $WpAsset.browser_download_url -OutFile $ZipPath
+            $TempExtract = Join-Path $VendorDir "wireproxy_extract"
+            if (Test-Path $TempExtract) { Remove-Item -Path $TempExtract -Recurse -Force }
+            Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
+            Remove-Item $ZipPath
+            $WpExtractedExe = Get-ChildItem -Path $TempExtract -Filter "wireproxy*.exe" -Recurse | Select-Object -First 1
+            if ($WpExtractedExe) {
+                Copy-Item -Path $WpExtractedExe.FullName -Destination $WireproxyVendorPath -Force
+            }
+            Remove-Item -Path $TempExtract -Recurse -Force -ErrorAction SilentlyContinue
+            $Versions.wireproxy = $LatestWireproxyVersion
+            Write-Host "wireproxy.exe ready ($LatestWireproxyVersion)." -ForegroundColor Green
+        } else {
+            # Some wireproxy releases publish a bare .exe. Try that too.
+            $WpExeAsset = ($WireproxyRelease.assets | Where-Object { $_.name -match "windows.*amd64.*\.exe$" } | Select-Object -First 1)
+            if ($WpExeAsset) {
+                Invoke-WebRequest -Uri $WpExeAsset.browser_download_url -OutFile $WireproxyVendorPath
+                $Versions.wireproxy = $LatestWireproxyVersion
+                Write-Host "wireproxy.exe ready ($LatestWireproxyVersion)." -ForegroundColor Green
+            } else {
+                Write-Host "Warning: wireproxy windows amd64 asset not found in release. WARP disabled in this build." -ForegroundColor Yellow
+            }
+        }
+    } else {
+        Write-Host "wireproxy.exe is up-to-date ($LatestWireproxyVersion)." -ForegroundColor Green
+    }
+} catch {
+    if (Test-Path $WireproxyVendorPath) {
+        Write-Host "wireproxy.exe found in vendor/ (offline - could not check for updates)." -ForegroundColor Green
+    } else {
+        Write-Host "Note: Could not fetch wireproxy release. WARP will be disabled unless users drop wireproxy.exe into tools/warp/." -ForegroundColor Yellow
+    }
+}
+
 $Versions | ConvertTo-Json | Out-File $VersionFile
 
 # --- Daily Versioning Logic ---
@@ -236,6 +317,18 @@ if (Test-Path $StreamlinkVendorDir) {
     Copy-Item -Path $StreamlinkVendorDir -Destination (Join-Path $ToolsDir "streamlink") -Recurse -Force
 }
 
+# WARP (Cloudflare) binaries — ship in tools/warp/ if vendored. Missing binaries cause WarpService
+# to stay Disabled with a warning; no crash. Users who don't want WARP can ignore; users who enable
+# the EnableWarp setting rely on these being present.
+$WarpToolsDir = Join-Path $ToolsDir "warp"
+if (!(Test-Path $WarpToolsDir)) { New-Item -ItemType Directory $WarpToolsDir | Out-Null }
+if (Test-Path (Join-Path $VendorDir "wireproxy.exe")) {
+    Copy-Item (Join-Path $VendorDir "wireproxy.exe") (Join-Path $WarpToolsDir "wireproxy.exe") -Force
+}
+if (Test-Path (Join-Path $VendorDir "wgcf.exe")) {
+    Copy-Item (Join-Path $VendorDir "wgcf.exe") (Join-Path $WarpToolsDir "wgcf.exe") -Force
+}
+
 # Cleanup
 Get-ChildItem -Path $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force
 Get-ChildItem -Path $BuildDir -Filter "*.log" | Remove-Item -Force
@@ -244,3 +337,19 @@ $FullVersion | Set-Content -Path (Join-Path $BuildDir "version.txt") -Encoding U
 $FullVersion | Set-Content -Path (Join-Path $PSScriptRoot "version.txt") -Encoding UTF8
 
 Write-Host "`nBuild $FullVersion Complete! Output in: $BuildDir" -ForegroundColor Green
+
+# --- Deploy Server ---
+$ServerScript = Join-Path (Split-Path $PSScriptRoot -Parent) "WhyKnot.dev\run.ps1"
+if (Test-Path $ServerScript) {
+    Write-Host "`n--- Deploying Server (both nodes) ---" -ForegroundColor Cyan
+    & $ServerScript -Action all
+} else {
+    Write-Host "Warning: Server deploy script not found at $ServerScript - skipping." -ForegroundColor Yellow
+}
+
+# --- Relaunch app if it was running before the build ---
+if ($WasRunning) {
+    $ExePath = Join-Path $BuildDir "WKVRCProxy.exe"
+    Write-Host "`nRelaunching WKVRCProxy..." -ForegroundColor Cyan
+    Start-Process -FilePath $ExePath -WorkingDirectory $BuildDir
+}

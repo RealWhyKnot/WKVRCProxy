@@ -5,6 +5,7 @@ import ThreeBackground from './components/ThreeBackground.vue'
 import Sidebar from './components/layout/Sidebar.vue'
 import DashboardView from './views/DashboardView.vue'
 import HistoryView from './views/HistoryView.vue'
+import BypassView from './views/BypassView.vue'
 import ShareView from './views/ShareView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -108,6 +109,7 @@ onMounted(() => {
           <div :key="appStore.activeTab" class="h-full">
             <DashboardView v-if="appStore.activeTab === 'dashboard'" />
             <HistoryView v-if="appStore.activeTab === 'history'" />
+            <BypassView v-if="appStore.activeTab === 'bypass'" />
             <ShareView v-if="appStore.activeTab === 'share'" />
             <RelayView v-if="appStore.activeTab === 'relay'" />
             <LogsView v-if="appStore.activeTab === 'logs'" />

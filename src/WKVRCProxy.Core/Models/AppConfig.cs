@@ -17,6 +17,10 @@ public class HistoryEntry
     public bool IsLive { get; set; }
 
     public string StreamType { get; set; } = "unknown";
+
+    public int? ResolutionHeight { get; set; }
+    public int? ResolutionWidth { get; set; }
+    public string? Vcodec { get; set; }
 }
 
 public class AppConfig
@@ -56,4 +60,32 @@ public class AppConfig
 
     [JsonPropertyName("enableTierMemory")]
     public bool EnableTierMemory { get; set; } = true;
+
+    // Tier 2 (whyknot.dev cloud resolver) does PO-token / extractor orchestration and can
+    // legitimately take 30-60s on cold cache. The old 10s default caused false timeouts.
+    [JsonPropertyName("tier2TimeoutSeconds")]
+    public int Tier2TimeoutSeconds { get; set; } = 60;
+
+    // Check GitHub for a newer yt-dlp on every launch and swap the binary if one is available.
+    // Never touches yt-dlp-og.exe (Tier 3 needs VRChat's pinned copy).
+    [JsonPropertyName("autoUpdateYtDlp")]
+    public bool AutoUpdateYtDlp { get; set; } = true;
+
+    // Enable the browser-extract bypass strategy (headless Chromium/Edge/Chrome). Fires when
+    // yt-dlp strategies can't crack a JS-gated site. Default on — system browsers are detected
+    // first, no download unless DownloadBundledChromium is also true.
+    [JsonPropertyName("enableBrowserExtract")]
+    public bool EnableBrowserExtract { get; set; } = true;
+
+    // When no Edge/Chrome/Brave is found on the system, opt in to downloading a ~180 MB bundled
+    // Chromium via PuppeteerSharp's BrowserFetcher. Off by default to avoid surprise downloads;
+    // users who lack a system browser and want browser-extract enable this once.
+    [JsonPropertyName("downloadBundledChromium")]
+    public bool DownloadBundledChromium { get; set; } = false;
+
+    // Enable Cloudflare WARP. When on, we launch wireproxy+wgcf as child processes so yt-dlp/
+    // browser-extract strategies can optionally route through WARP's SOCKS5 proxy on 127.0.0.1:40000.
+    // Nothing on the host machine is modified; WARP only applies to our own subprocesses.
+    [JsonPropertyName("enableWarp")]
+    public bool EnableWarp { get; set; } = false;
 }

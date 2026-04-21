@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -26,6 +27,8 @@ class Program
     private static Logger? _logger;
     private static ModuleCoordinator? _coordinator;
     private static WhyKnotShareService? _shareService;
+    private static ResolutionEngine? _resEngine;
+    private static BrowserExtractService? _browserExtractor;
     private static bool _isWindowReady = false;
 
     [STAThread]
@@ -79,6 +82,14 @@ class Program
         var curlClient = new CurlImpersonateClient();
         var potProvider = new PotProviderService();
         var integrityManager = new RelayIntegrityManager();
+        var ytDlpUpdater = new YtDlpUpdater();
+        var browserSessionCache = new BrowserSessionCache();
+        // BrowserExtractService is not a module (no InitializeAsync lifecycle needed — its browser
+        // is lazy-initialised on first extraction call). Constructed here so Program.cs owns its
+        // dispose lifecycle and it can be passed into ResolutionEngine by constructor.
+        var browserExtractService = new BrowserExtractService(_logger, _settings, browserSessionCache);
+        _browserExtractor = browserExtractService;
+        var warpService = new WarpService();
 
         _coordinator.Register(logMonitor);
         _coordinator.Register(codecInstaller);
@@ -90,8 +101,20 @@ class Program
         _coordinator.Register(proxyRuleManager);
         _coordinator.Register(curlClient);
         _coordinator.Register(potProvider);
+        _coordinator.Register(browserSessionCache);  // must register before RelayServer — it depends on this
         _coordinator.Register(relayServer);
         _coordinator.Register(integrityManager);
+        _coordinator.Register(ytDlpUpdater);
+        _coordinator.Register(warpService);
+
+        ytDlpUpdater.OnStatusChanged += (status, detail, local, remote) => {
+            SendToUi("YTDLP_UPDATE", new {
+                status = status.ToString(),
+                detail,
+                localVersion = local,
+                remoteVersion = remote
+            });
+        };
 
         // Keep legacy event handlers for backward compatibility during transition.
         // These will be removed once all UI communication moves through the event bus.
@@ -139,16 +162,16 @@ class Program
             SendToUi("P2P_SHARE_ERROR", new { message });
         };
 
-        var resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient, potProvider);
-        resEngine.SetEventBus(_coordinator.EventBus);
+        _resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient, potProvider, browserExtractService, warpService);
+        _resEngine.SetEventBus(_coordinator.EventBus);
 
-        ipcServer.OnResolveRequested += async (payload) => await resEngine.ResolveAsync(payload);
+        ipcServer.OnResolveRequested += async (payload) => await _resEngine.ResolveAsync(payload);
         logMonitor.OnVrcPathDetected += (path) => {
             patcherService.UpdateToolsDir(path);
             ipcServer.ExportPortToDirectory(path);
         };
 
-        resEngine.OnStatusUpdate += (msg, stats) => {
+        _resEngine.OnStatusUpdate += (msg, stats) => {
             if (_isWindowReady) {
                 try {
                     _window?.Invoke(() => {
@@ -309,6 +332,7 @@ class Program
             _logger?.Warning("Shutdown error: " + ex.Message, ex);
         }
         _shareService?.Dispose();
+        _browserExtractor?.Dispose();
         _coordinator?.Dispose();
         _logger?.Dispose();
     }
@@ -323,6 +347,39 @@ class Program
         } catch (Exception ex) {
             _logger?.Warning("SendToUi '" + type + "' failed: " + ex.Message);
         }
+    }
+
+    private static void SendBypassMemory()
+    {
+        if (_resEngine == null) return;
+        var snapshot = _resEngine.StrategyMemory.Snapshot();
+        // Flatten to an array the UI can render without key gymnastics.
+        var rows = snapshot.Select(kvp => new {
+            key = kvp.Key,
+            entries = kvp.Value.Select(e => new {
+                strategy = e.StrategyName,
+                successCount = e.SuccessCount,
+                failureCount = e.FailureCount,
+                consecutiveFailures = e.ConsecutiveFailures,
+                netScore = e.NetScore,
+                lastSuccess = e.LastSuccess,
+                lastFailure = e.LastFailure,
+                firstSeen = e.FirstSeen
+            }).ToArray()
+        }).ToArray();
+        SendToUi("BYPASS_MEMORY", rows);
+    }
+
+    private static void SendYtDlpUpdateStatus()
+    {
+        var updater = _coordinator?.GetModule<YtDlpUpdater>();
+        if (updater == null) return;
+        SendToUi("YTDLP_UPDATE", new {
+            status = updater.Status.ToString(),
+            detail = updater.StatusDetail,
+            localVersion = updater.LocalVersion,
+            remoteVersion = updater.RemoteVersion
+        });
     }
 
     private static void SetupHostsBypass()
@@ -424,12 +481,46 @@ class Program
                     if (root.TryGetProperty("data", out var shareData)) {
                         string shareUrl = shareData.TryGetProperty("url", out var urlEl) ? urlEl.GetString() ?? "" : "";
                         if (!string.IsNullOrEmpty(shareUrl)) {
-                            Task.Run(() => _shareService?.StartAsync(shareUrl));
+                            Task.Run(async () => {
+                                // Resolve the user's URL through the tier cascade first so the P2P relay
+                                // sees a direct media URL (not a YouTube watch page).
+                                string? resolved = await (_resEngine?.ResolveForShareAsync(shareUrl, "AVPro", "P2PShare")
+                                                          ?? Task.FromResult<string?>(null));
+                                if (string.IsNullOrEmpty(resolved)) {
+                                    SendToUi("P2P_SHARE_ERROR", new { message = "Failed to resolve URL through tier cascade." });
+                                    return;
+                                }
+                                if (_shareService != null) await _shareService.StartAsync(resolved);
+                            });
                         }
                     }
                     break;
                 case "STOP_P2P_SHARE":
                     _shareService?.Stop();
+                    break;
+                case "REQUEST_CLOUD_RESOLVE":
+                    if (root.TryGetProperty("data", out var cloudData)) {
+                        string cloudUrl = cloudData.TryGetProperty("url", out var cuEl) ? cuEl.GetString() ?? "" : "";
+                        if (!string.IsNullOrEmpty(cloudUrl)) {
+                            Task.Run(async () => {
+                                string? resolved = await (_resEngine?.ResolveForShareAsync(cloudUrl, "AVPro", "CloudShare")
+                                                          ?? Task.FromResult<string?>(null));
+                                if (string.IsNullOrEmpty(resolved)) {
+                                    SendToUi("CLOUD_RESOLVE_RESULT", new { success = false, message = "Failed to resolve URL through tier cascade." });
+                                    return;
+                                }
+                                // Find the history entry we just created to surface resolution + tier info
+                                var entry = _settings?.Config.History.Count > 0 ? _settings.Config.History[0] : null;
+                                SendToUi("CLOUD_RESOLVE_RESULT", new {
+                                    success = true,
+                                    url = resolved,
+                                    tier = entry?.Tier,
+                                    height = entry?.ResolutionHeight,
+                                    width = entry?.ResolutionWidth
+                                });
+                            });
+                        }
+                    }
                     break;
                 case "GET_HEALTH":
                     if (_coordinator != null)
@@ -441,6 +532,25 @@ class Program
                             overall = _coordinator.GetOverallHealth().ToString()
                         }));
                     }
+                    break;
+                case "GET_BYPASS_MEMORY":
+                    SendBypassMemory();
+                    break;
+                case "FORGET_BYPASS_KEY":
+                    if (root.TryGetProperty("data", out var forgetData) &&
+                        forgetData.TryGetProperty("key", out var forgetKey))
+                    {
+                        string key = forgetKey.GetString() ?? "";
+                        if (!string.IsNullOrEmpty(key) && _resEngine != null)
+                        {
+                            _resEngine.StrategyMemory.ForgetKey(key);
+                            _logger?.Info("[BypassMemory] Forgot '" + key + "' on user request.");
+                            SendBypassMemory();
+                        }
+                    }
+                    break;
+                case "GET_YTDLP_UPDATE":
+                    SendYtDlpUpdateStatus();
                     break;
             }
         } catch (Exception ex) {
