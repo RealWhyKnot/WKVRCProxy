@@ -1,5 +1,11 @@
 $ErrorActionPreference = "Stop"
 
+# Pin the working directory to the script's own root so relative paths (src/..., dist/...)
+# resolve consistently regardless of how the script is invoked. Without this, a prior failed
+# run that left a persistent shell inside src/WKVRCProxy.UI/ui would break every subsequent
+# relative-path lookup here.
+Set-Location $PSScriptRoot
+
 $BuildDir = Join-Path $PSScriptRoot "dist"
 $VendorDir = Join-Path $PSScriptRoot "vendor"
 $VersionFile = Join-Path $VendorDir "versions.json"
@@ -280,12 +286,29 @@ $StoreContent = Get-Content $AppStorePath -Raw
 $RegexPattern = 'version = ref\(''(.+?)''\)'
 $RegexReplace = 'version = ref(''{0}'')' -f $FullVersion
 $NewStoreContent = $StoreContent -replace $RegexPattern, $RegexReplace
-Set-Content $AppStorePath $NewStoreContent
+# -NoNewline: Get-Content -Raw preserves the file's existing trailing newline, and Set-Content
+# appends one by default. Without -NoNewline the file grows by one blank line per build.
+Set-Content $AppStorePath $NewStoreContent -NoNewline
 
 # --- Build Frontend ---
+# npm (and vite) write informational warnings to stderr. Under PS 5.1 with
+# ErrorActionPreference=Stop, stderr output from a native command becomes a
+# terminating NativeCommandError — even when the tool exits 0. Scope the
+# preference down for just this call and gate on $LASTEXITCODE instead.
 Write-Host "`n--- Building Frontend ---" -ForegroundColor Cyan
 Push-Location "src/WKVRCProxy.UI/ui"
-npm run build
+$PrevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    npm run build
+    if ($LASTEXITCODE -ne 0) {
+        Pop-Location
+        $ErrorActionPreference = $PrevEap
+        throw "Frontend build failed (npm exit $LASTEXITCODE)"
+    }
+} finally {
+    $ErrorActionPreference = $PrevEap
+}
 Pop-Location
 
 # --- Build .NET Projects ---
